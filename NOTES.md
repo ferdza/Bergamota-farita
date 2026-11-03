@@ -43,8 +43,18 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
   (iPhone11,8) root, so no new profile. **TODO: confirm the OnePlus 6T's exact
   `fastboot getvar product`; if not "fajita", add it to SUPPORTED_PRODUCTS.**
   (Deploying the fork's apps/web for real use is a separate hosting step.)
-* **CI:** xnu.yml dispatched on `fajita` — run **41701773048** (compile-check of
-  0252 on the real toolchain; also yields the buildtree for local xnu-cc.py).
+* **CI: GREEN.** xnu.yml run **41704470401** (`fajita`) **succeeded** — the
+  xnu-11215 kernel builds with the fajita series + touch 0252 on the real macOS
+  toolchain. Artifacts: `xnu-kernel` (67 MB) and `xnu-buildtree` (28 MB, use it
+  with tools/xnu-cc.py for free local compile-checks now). (First attempt
+  41701773048 failed only on macOS-runner capacity, not code.)
+* **Web control plane (apps/web):** now hosts free on **GitHub Pages**
+  (`.github/workflows/pages.yml` + DEPLOY.md; one-time Settings->Pages->GitHub
+  Actions). fajita product = "sdm845" (confirmed on device). Added the **`boot`**
+  fastboot capability (FastbootDevice.boot(), WebUSB) = the Mac app's Boot Queue
+  core. Direction (user): port the WHOLE Mac control plane to the browser
+  (Chromium: WebUSB CDC-ECM + WASM TCP/IP for live log / SSH / metrics / sideload;
+  CI artifact download instead of local kernel build). Incremental.
 * **Independent validation (docs/FORKS_SURVEY.md, edi194/ios-fajita):** confirms
   every Enxerto value — header v1 + Image.gz-dtb, SDM845 v2.1 msm-id 0x141/0x20001
   (= the fdt0 we kept), IMEM 0x146bf65c, PS_HOLD 0xc264000, GIC 0x17a00000/60000,
