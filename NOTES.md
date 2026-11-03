@@ -68,8 +68,24 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     patcher.ts, session.forgetPicked()); device name no longer hard-coded "Poco
     F1" — uses productName() (sdm845 -> OnePlus 6T). svelte-check 0 errors; Pages
     build+deploy green (run 41738902151).
-  - **Next control-plane step:** wire `boot` into the UI (Boot Queue: pick image →
-    Boot, no flash), then live kernel log over WebUSB CDC-ECM.
+  - **① Test-boot DONE (c757cb0):** Confirm step offers "Boot once (test)" for a
+    boot image → fastboot `boot` (download whole + boot, nothing written).
+    flasher.ts bootImage(); session op "flash"|"boot"; Flash screen op-aware.
+  - **② Live-log DONE (37e2592), live at /log/:** reads the phone's kernel log in
+    the browser over CDC-ECM. lib/ethernet.ts (pure Ethernet/ARP/IPv4/UDP),
+    lib/netlog.ts (NetLogEngine ARP-reply + UDP/5140, LineAssembler, classifyTags
+    from LogStore.swift) — unit-tested (test/netlog.test.ts, 7). lib/usbnet.ts =
+    WebUSB CDC-ECM link (claim data+comm, SET_ETHERNET_PACKET_FILTER, stream
+    frames), **EXPERIMENTAL — needs on-device confirmation** (iOS ECM framing,
+    192.168.7.1/.2). UI livelog/ with search + SWEET/CRASH filters, pause/follow,
+    lines/s, save .txt. Host MAC 02:be:47:0a:01:01, host IP 192.168.7.1.
+  - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
+    RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
+    (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
+    sweetuicache register). Browser needs TCP/IP + SSH + SCP over the ECM link.
+    Big, staged (TCP → SSH handshake → userauth → exec/SCP → install UI), all
+    unverifiable without the device. BLOCKED on a user decision: SSH auth model
+    (paste private key vs. browser-generated key baked by the patcher).
 * **Independent validation (docs/FORKS_SURVEY.md, edi194/ios-fajita):** confirms
   every Enxerto value — header v1 + Image.gz-dtb, SDM845 v2.1 msm-id 0x141/0x20001
   (= the fdt0 we kept), IMEM 0x146bf65c, PS_HOLD 0xc264000, GIC 0x17a00000/60000,
