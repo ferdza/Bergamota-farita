@@ -2,7 +2,8 @@
   import { session } from "./session.svelte.ts";
   import FilePick from "./FilePick.svelte";
   import type { Partition } from "../lib/fastboot.ts";
-  import { fmtBytes } from "../lib/flasher.ts";
+  import { fmtBytes, productName } from "../lib/flasher.ts";
+  import { storedImages, removeStored, type StoredImage } from "../patcher/patcher.ts";
 
   const targets: { p: Partition; name: string; what: string; accept: string }[] = [
     { p: "userdata", name: "iOS root", what: "userdata · .simg", accept: ".simg,.img" },
@@ -12,31 +13,29 @@
   const accept = $derived(targets.find((t) => t.p === session.partition)!.accept);
 
   // images a patcher run left in this browser's private storage (OPFS)
-  let stored = $state<{ name: string; size: number; file: File }[]>([]);
+  let stored = $state<StoredImage[]>([]);
+  async function loadStored() {
+    stored = await storedImages();
+  }
   $effect(() => {
-    (async () => {
-      try {
-        const dir = await navigator.storage.getDirectory();
-        const out: typeof stored = [];
-        for await (const [name, h] of dir as unknown as AsyncIterable<[string, FileSystemHandle]>) {
-          if (h.kind === "file" && /\.(s?img)$/i.test(name)) {
-            const file = await (h as FileSystemFileHandle).getFile();
-            out.push({ name, size: file.size, file });
-          }
-        }
-        stored = out;
-      } catch {
-        stored = [];
-      }
-    })();
+    // re-list whenever the chosen image changes (a delete clears it)
+    session.picked;
+    loadStored();
   });
+
+  async function trash(s: StoredImage) {
+    if (!confirm(`Delete "${s.name}" (${fmtBytes(s.size)}) from this browser's storage? The IPSW on your disk is untouched; you would patch again to recreate it.`)) return;
+    await removeStored(s.name);
+    if (session.picked?.from === "browser" && session.picked.name === s.name) session.forgetPicked();
+    await loadStored();
+  }
 
   const c = $derived(session.checked);
 </script>
 
 <section class="sheet" aria-labelledby="choose-title">
   {#if session.phone}
-    <div class="chip"><i class="dot"></i><b>Poco F1 found</b><span>{session.phone.kind === "bergamota" ? "Bergamota fastboot" : "ABL fastboot"} · unlocked</span></div>
+    <div class="chip"><i class="dot"></i><b>{productName(session.phone.product)} found</b><span>{session.phone.kind === "bergamota" ? "Bergamota fastboot" : "ABL fastboot"} · unlocked</span></div>
   {/if}
   <h2 id="choose-title">What do you want to write?</h2>
 
@@ -65,7 +64,12 @@
     <div class="stored">
       <span class="muted">In this browser:</span>
       {#each stored as s}
-        <button class="pill" onclick={() => session.pick(s.file, s.name, "browser")}>{s.name} · {fmtBytes(s.size)}</button>
+        <span class="pill" class:on={session.picked?.from === "browser" && session.picked.name === s.name}>
+          <button class="use" onclick={() => session.pick(s.file, s.name, "browser")}>{s.name} · {fmtBytes(s.size)}</button>
+          <button class="bin" title="Delete this image from the browser" aria-label={`Delete ${s.name} from the browser`} onclick={() => trash(s)}>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2m-6 0 .7 9.3a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9L15 6M8.5 9v4m3-4v4" /></svg>
+          </button>
+        </span>
       {/each}
     </div>
   {/if}
@@ -87,6 +91,11 @@
   .targets b { display: block; font-size: 20px; font-weight: 850; }
   .targets small { font-size: 13px; color: var(--ink-soft); }
   .stored { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
-  .pill { border: 0; background: var(--white); border-radius: 999px; padding: 8px 14px; font: 600 13px var(--mono); cursor: pointer; box-shadow: inset 0 0 0 1px var(--paper-line); }
+  .pill { display: inline-flex; align-items: stretch; background: var(--white); border-radius: 999px; box-shadow: inset 0 0 0 1px var(--paper-line); overflow: hidden; }
+  .pill.on { box-shadow: inset 0 0 0 2px var(--ink); }
+  .pill .use { border: 0; background: transparent; padding: 8px 6px 8px 14px; font: 600 13px var(--mono); cursor: pointer; color: inherit; }
+  .pill .bin { border: 0; background: transparent; padding: 0 12px 0 8px; cursor: pointer; color: var(--ink-soft); display: inline-flex; align-items: center; border-left: 1px solid var(--paper-line); }
+  .pill .bin:hover { color: #b3261e; background: color-mix(in srgb, #b3261e 10%, transparent); }
+  .pill .bin svg { width: 16px; height: 16px; }
   @media (max-width: 600px) { .targets { grid-template-columns: 1fr; } }
 </style>

@@ -211,6 +211,13 @@ class Session {
     this.patchState = "idle";
   }
 
+  /** Forget the currently chosen image (e.g. it was just deleted from browser storage). */
+  forgetPicked() {
+    this.picked = null;
+    this.checked = null;
+    this.checkError = null;
+  }
+
   async setPartition(p: Partition) {
     if (!(ALLOWED_PARTITIONS as readonly string[]).includes(p)) return;
     this.partition = p;

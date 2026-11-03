@@ -23,7 +23,7 @@
     <div class="row"><button class="btn leaf" onclick={() => session.setPath("image")}>Flash an image I built</button></div>
   {:else if session.patchState === "idle"}
     <h2 id="patch-title">Patch the IPSW in this page.</h2>
-    <p>The IPSW is read from your disk, decrypted, rewritten for the Poco F1's processor and written as a root image into this browser's private storage (about {Math.round(NEEDED_BYTES / 2 ** 30)} GB). Nothing leaves your computer; the only request is for the decryption key Apple publishes.</p>
+    <p>The IPSW is read from your disk, decrypted, rewritten for the Snapdragon 845 (a processor without pointer authentication) and written as a root image into this browser's private storage (about {Math.round(NEEDED_BYTES / 2 ** 30)} GB). Nothing leaves your computer; the only request is for the decryption key Apple publishes.</p>
     <ol class="stages">
       {#each PATCH_STAGES as [, text]}<li>{text}</li>{/each}
     </ol>

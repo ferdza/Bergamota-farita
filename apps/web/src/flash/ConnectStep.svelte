@@ -1,5 +1,6 @@
 <script lang="ts">
   import { session } from "./session.svelte.ts";
+  import { productName } from "../lib/flasher.ts";
 
   const ok = $derived(!!session.phone && !session.phoneProblems.length);
   const udev = 'SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0660", TAG+="uaccess"';
@@ -9,7 +10,7 @@
   {#if session.phone}
     <div class="chip" class:bad={!ok}>
       <i class="dot"></i>
-      <b>{ok ? "Poco F1 found" : "Phone found"}</b>
+      <b>{ok ? `${productName(session.phone.product)} found` : "Phone found"}</b>
       <span>{session.phone.product ?? "unknown"} · {session.phone.kind === "bergamota" ? "Bergamota fastboot" : "ABL fastboot"}{session.phone.unlocked === "yes" ? " · unlocked" : ""}</span>
     </div>
   {/if}
@@ -22,7 +23,7 @@
       <button class="btn ghost" onclick={() => session.connect()}>Use another phone</button>
     </div>
   {:else}
-    <h2 id="connect-title">Put your Poco F1 in fastboot and plug it in.</h2>
+    <h2 id="connect-title">Put your phone in fastboot and plug it in.</h2>
     <p>Hold <b>Power + Volume down</b> until the fastboot screen appears, or boot Bergamota fastboot from Enxerto. Then let this page find it. Nothing is written yet.</p>
     {#each session.phoneProblems as p}
       <p class="problem">{p}</p>

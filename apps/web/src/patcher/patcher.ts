@@ -107,3 +107,36 @@ export async function discardImage(): Promise<void> {
     /* none */
   }
 }
+
+export interface StoredImage {
+  name: string;
+  size: number;
+  file: File;
+}
+
+/** Every image a patcher run left in this browser's private storage (OPFS). */
+export async function storedImages(): Promise<StoredImage[]> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const out: StoredImage[] = [];
+    for await (const [name, h] of root as unknown as AsyncIterable<[string, FileSystemHandle]>) {
+      if (h.kind === "file" && /\.(s?img)$/i.test(name)) {
+        const file = await (h as FileSystemFileHandle).getFile();
+        out.push({ name, size: file.size, file });
+      }
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  } catch {
+    return [];
+  }
+}
+
+/** Deletes one image by name from the browser's private storage. */
+export async function removeStored(name: string): Promise<void> {
+  try {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry(name);
+  } catch {
+    /* already gone */
+  }
+}
