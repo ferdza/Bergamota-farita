@@ -3,7 +3,10 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { resolve } from "node:path";
 
 // Two pages: the landing page at / and the flasher at /flash/.
+// BERGA_BASE sets the base path for hosting under a sub-path (GitHub Pages project
+// site: BERGA_BASE=/bergamota-farita/). Default "/" for root hosting (Cloudflare).
 export default defineConfig({
+  base: process.env.BERGA_BASE || "/",
   plugins: [svelte()],
   build: {
     target: "es2022",

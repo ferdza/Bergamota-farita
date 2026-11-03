@@ -2,6 +2,7 @@
   import { session } from "./session.svelte.ts";
   import { fmtBytes, fmtDuration } from "../lib/flasher.ts";
 
+  const base = import.meta.env.BASE_URL;
   let now = $state(performance.now());
   // the clock runs only while flashing, so speed and time freeze at the end
   $effect(() => {
@@ -57,7 +58,7 @@
       <button class="btn ghost" disabled={session.stopRequested} onclick={() => (session.stopRequested = true)}>{session.stopRequested ? "Stopping after this piece…" : "Stop after this piece"}</button>
     {:else if session.flashState === "done"}
       {#if !session.rebooted}<button class="btn leaf" onclick={() => session.reboot()}>Restart the phone</button>{/if}
-      <a class="btn ghost" href="/">Back to Bergamota</a>
+      <a class="btn ghost" href={base}>Back to Bergamota</a>
     {:else}
       <button class="btn" onclick={() => session.resetFlash()}>Try again</button>
     {/if}

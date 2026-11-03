@@ -67,7 +67,9 @@ function parseNumber(v: string): number | null {
  * shows the real product so it can be added). */
 export const SUPPORTED_PRODUCTS: Record<string, string> = {
   beryllium: "Poco F1",
-  fajita: "OnePlus 6T",
+  // OnePlus's ABL reports the SoC, not the codename: `fastboot getvar product` -> "sdm845"
+  // on the OnePlus 6T (fajita). Confirmed on-device 2026-11-03.
+  sdm845: "OnePlus 6T",
 };
 
 /** Friendly phone name for the UI, or the raw product string. */

@@ -80,7 +80,7 @@ export class Patcher {
 /** The prebuilt on-device tools (SSH server, first-boot helpers) this site hosts: null when the site has none. */
 export async function fetchTools(): Promise<File | null> {
   try {
-    const r = await fetch("/tools/berga-tools.zip");
+    const r = await fetch(import.meta.env.BASE_URL + "tools/berga-tools.zip");
     if (!r.ok || !(r.headers.get("content-type") ?? "").match(/zip|octet-stream/)) return null;
     return new File([await r.blob()], "berga-tools.zip");
   } catch {

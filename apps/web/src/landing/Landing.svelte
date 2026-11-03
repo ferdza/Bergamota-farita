@@ -1,7 +1,8 @@
 <script lang="ts">
   import { hug } from "../lib/hug.ts";
 
-  const repo = "https://github.com/ry-diffusion/Bergamota";
+  const base = import.meta.env.BASE_URL; // "/" at root, "/bergamota-farita/" on GitHub Pages
+  const repo = "https://github.com/ferdza/bergamota-farita";
   const parts = [
     { name: "Renegade", what: "Rewrites every arm64e Mach-O and the whole shared cache for a CPU without pointer authentication, then builds the HFS+ root.", where: "userdata · from your IPSW" },
     { name: "Heartwood", what: "Apple's open-source XNU kernel with our patches for the Snapdragon 845.", where: "xnu-11215" },
@@ -18,11 +19,11 @@
 </script>
 
 <header class="nav">
-  <a class="mark" href="/" aria-label="Bergamota home"><img src="/favicon.svg" alt="" width="34" height="34" /> Bergamota</a>
+  <a class="mark" href={base} aria-label="Bergamota home"><img src="{base}favicon.svg" alt="" width="34" height="34" /> Bergamota</a>
   <nav aria-label="Main">
     <a href="#boot">How it boots</a>
     <a href="#status">Status</a>
-    <a href="/flash/">Flash</a>
+    <a href="{base}flash/">Flash</a>
     <a class="gh" href={repo}>GitHub</a>
   </nav>
 </header>
@@ -31,15 +32,15 @@
   <section class="hero" use:hug aria-labelledby="hero-title">
     <p class="giant l" aria-hidden="true">2</p>
     <p class="giant r" aria-hidden="true">6</p>
-    <img class="figure" data-subject src="/img/newton.webp" width="900" height="1264" alt="Isaac Newton, after Godfrey Kneller's 1689 portrait, printed as a black-and-white halftone" />
+    <img class="figure" data-subject src="{base}img/newton.webp" width="900" height="1264" alt="Isaac Newton, after Godfrey Kneller's 1689 portrait, printed as a black-and-white halftone" />
     <div class="pitch">
       <h1 id="hero-title">iOS was not built for this phone.</h1>
-      <p>Apple's unmodified iOS userland, booting on a Xiaomi Poco F1. Bring your own IPSW: this page patches it and flashes your phone, all on your computer.</p>
-      <a class="btn leaf" href="/flash/">
+      <p>Apple's unmodified iOS userland, booting on a Xiaomi Poco F1 or a OnePlus 6T. Bring your own IPSW: this page patches it and flashes your phone, all on your computer.</p>
+      <a class="btn leaf" href="{base}flash/">
         Patch your IPSW and flash
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M4 10h11M11 5l5 5-5 5" /></svg>
       </a>
-      <a class="alt" href="/flash/#image">or flash an image you already built</a>
+      <a class="alt" href="{base}flash/#image">or flash an image you already built</a>
     </div>
   </section>
 
@@ -77,7 +78,7 @@
         <li>About 20 GB of free disk space</li>
       </ul>
       <p class="fine">Nothing from Apple or Qualcomm is hosted here. Your IPSW and your images are read on your computer and never uploaded.</p>
-      <a class="btn" href="/flash/">Open the flasher</a>
+      <a class="btn" href="{base}flash/">Open the flasher</a>
     </div>
   </section>
 </main>

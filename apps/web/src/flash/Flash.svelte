@@ -9,6 +9,7 @@
   import FlashStep from "./FlashStep.svelte";
   import Advanced from "./Advanced.svelte";
 
+  const base = import.meta.env.BASE_URL;
   const supported = FastbootDevice.supported() && window.isSecureContext;
   const paths: [Path, string][] = [["patch", "Patch IPSW + flash"], ["image", "Flash an image"]];
 
@@ -35,7 +36,7 @@
 
 <div class="page" class:adv={session.advanced}>
   <header class="top">
-    <a class="mark" href="/"><img src="/favicon.svg" alt="" width="32" height="32" /> Bergamota <span>Flash</span></a>
+    <a class="mark" href={base}><img src="{base}favicon.svg" alt="" width="32" height="32" /> Bergamota <span>Flash</span></a>
     <div class="controls">
       <div class="seg paths" role="tablist" aria-label="What to do">
         {#each paths as [p, label]}

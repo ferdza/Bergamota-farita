@@ -1,0 +1,57 @@
+name: web (GitHub Pages)
+
+# Build apps/web (the browser flasher / control plane) and publish it to GitHub
+# Pages — free static hosting with HTTPS (WebUSB needs a secure context, which
+# Pages provides). The site is served under the repo sub-path, so the build sets
+# BERGA_BASE=/<repo>/. One-time setup: repo Settings -> Pages -> Source = GitHub
+# Actions. URL: https://<owner>.github.io/<repo>/  (the flasher at .../flash/).
+
+on:
+  push:
+    branches: [fajita]
+    paths:
+      - "apps/web/**"
+      - "tools/renegade-wasm/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Rust + wasm target (for the Renegade WASM patcher)
+        run: rustup target add wasm32-unknown-unknown
+      - name: Install web deps
+        working-directory: apps/web
+        run: npm ci
+      - name: Build (base = /${{ github.event.repository.name }}/)
+        working-directory: apps/web
+        env:
+          BERGA_BASE: /${{ github.event.repository.name }}/
+        run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
