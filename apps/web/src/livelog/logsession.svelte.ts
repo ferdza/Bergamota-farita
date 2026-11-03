@@ -1,0 +1,173 @@
+// State for the live-log page: drive the CDC-ECM link, answer ARP, collect UDP/5140 lines, and keep a
+// bounded ring for the view. Frames arrive fast, so lines are buffered off-reactive and flushed to the
+// reactive ring every 100 ms (the Mac app does the same with a 0.1 s timer).
+
+import { UsbNet, UsbNetError } from "../lib/usbnet.ts";
+import { classifyTags, LineAssembler, NetLogEngine, LOG_TAGS, type LogTag, tagBit } from "../lib/netlog.ts";
+
+export interface Line {
+  id: number;
+  text: string;
+  tags: number;
+}
+
+const RING = 20000; // lines kept in memory
+export const MAX_VISIBLE = 3000; // lines handed to the DOM
+
+class LogSession {
+  state = $state<"idle" | "connecting" | "live" | "error">("idle");
+  error = $state<string | null>(null);
+  lines = $state<Line[]>([]);
+  total = $state(0);
+  linesPerSec = $state(0);
+  arpReplies = $state(0);
+  deviceName = $state<string | null>(null);
+
+  // view controls
+  search = $state("");
+  activeTags = $state<Set<LogTag>>(new Set());
+  paused = $state(false);
+  follow = $state(true);
+
+  private net: UsbNet | null = null;
+  private engine = new NetLogEngine();
+  private assembler = new LineAssembler();
+  private pending: Line[] = [];
+  private nextId = 0;
+  private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private rateWindow: [number, number][] = [];
+
+  get supported() {
+    return UsbNet.supported() && (typeof window === "undefined" || window.isSecureContext);
+  }
+
+  async connect(dev?: USBDevice) {
+    if (this.state === "connecting" || this.state === "live") return;
+    this.state = "connecting";
+    this.error = null;
+    try {
+      const net = dev ? await UsbNet.open(dev) : await UsbNet.request();
+      this.net = net;
+      this.deviceName = net.usb.productName ?? "USB networking device";
+      this.state = "live";
+      this.startFlush();
+      // prime the phone's ARP table, then pump frames
+      await net.send(this.engine.announce()).catch(() => {});
+      this.pump(net);
+    } catch (e) {
+      const err = e as Error;
+      if (err.name === "NotFoundError") {
+        this.state = "idle"; // the user closed the picker
+      } else {
+        this.state = "error";
+        this.error = err instanceof UsbNetError ? err.message : explain(err);
+      }
+    }
+  }
+
+  private async pump(net: UsbNet) {
+    try {
+      for await (const frame of net.frames()) {
+        const { reply, logBytes } = this.engine.handle(frame);
+        if (reply) await net.send(reply).catch(() => {});
+        if (logBytes) {
+          this.arpReplies = this.engine.arpReplies;
+          for (const text of this.assembler.push(logBytes)) {
+            this.pending.push({ id: this.nextId++, text, tags: classifyTags(text) });
+          }
+        }
+      }
+    } catch (e) {
+      if (this.state === "live") {
+        this.state = "error";
+        this.error = (e as Error).message;
+      }
+    }
+  }
+
+  private startFlush() {
+    this.flushTimer ??= setInterval(() => this.flush(), 100);
+  }
+
+  private flush() {
+    const n = this.pending.length;
+    this.updateRate(n);
+    if (!n) return;
+    this.total += n;
+    if (!this.paused) {
+      const next = this.lines.concat(this.pending);
+      this.lines = next.length > RING ? next.slice(next.length - RING) : next;
+    }
+    this.pending.length = 0;
+  }
+
+  private updateRate(n: number) {
+    const now = Date.now();
+    this.rateWindow.push([now, n]);
+    this.rateWindow = this.rateWindow.filter(([t]) => now - t <= 2000);
+    this.linesPerSec = Math.round(this.rateWindow.reduce((s, [, c]) => s + c, 0) / 2);
+  }
+
+  toggleTag(t: LogTag) {
+    const next = new Set(this.activeTags);
+    if (next.has(t)) next.delete(t);
+    else next.add(t);
+    this.activeTags = next;
+  }
+
+  /** The lines the view should show: tag + text filtered, capped to MAX_VISIBLE (most recent). */
+  get visible(): Line[] {
+    const mask = [...this.activeTags].reduce((m, t) => m | tagBit(t), 0);
+    const needle = this.search.trim().toLowerCase();
+    if (!mask && !needle) return this.lines.slice(Math.max(0, this.lines.length - MAX_VISIBLE));
+    const out: Line[] = [];
+    for (let i = this.lines.length - 1; i >= 0 && out.length < MAX_VISIBLE; i--) {
+      const l = this.lines[i];
+      if ((!mask || l.tags & mask) && (!needle || l.text.toLowerCase().includes(needle))) out.push(l);
+    }
+    return out.reverse();
+  }
+
+  clear() {
+    this.lines = [];
+    this.pending.length = 0;
+    this.total = 0;
+  }
+
+  save() {
+    const text = this.lines.map((l) => l.text).join("\n") + "\n";
+    const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+    a.href = url;
+    a.download = `bergamota-log-${stamp}.txt`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+
+  async disconnect() {
+    const net = this.net;
+    this.net = null;
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.state = "idle";
+    this.linesPerSec = 0;
+    await net?.close().catch(() => {});
+  }
+}
+
+function explain(e: Error): string {
+  if (e.name === "SecurityError") return "The browser blocked USB access. Live log needs Chrome or Edge on https or localhost.";
+  return e.message || String(e);
+}
+
+export const TAGS = LOG_TAGS;
+export const log = new LogSession();
+
+if (typeof navigator !== "undefined" && UsbNet.supported()) {
+  navigator.usb?.addEventListener("disconnect", () => {
+    if (log.state === "live") log.disconnect();
+  });
+}

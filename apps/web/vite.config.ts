@@ -16,6 +16,7 @@ export default defineConfig({
       input: {
         landing: resolve(import.meta.dirname, "index.html"),
         flash: resolve(import.meta.dirname, "flash/index.html"),
+        log: resolve(import.meta.dirname, "log/index.html"),
       },
     },
   },

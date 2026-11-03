@@ -70,6 +70,7 @@
       {:else if !session.rebooted}
         <button class="btn leaf" onclick={() => session.reboot()}>Restart the phone</button>
       {/if}
+      {#if session.partition === "userdata"}<a class="btn ghost" href="{base}log/">Watch the live log</a>{/if}
       <a class="btn ghost" href={base}>Back to Bergamota</a>
     {:else}
       <button class="btn" onclick={() => session.resetFlash()}>Try again</button>

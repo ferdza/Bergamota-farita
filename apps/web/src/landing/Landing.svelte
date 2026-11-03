@@ -29,6 +29,7 @@
     <a href="#boot">How it boots</a>
     <a href="#status">Status</a>
     <a href="{base}flash/">Flash</a>
+    <a href="{base}log/">Live log</a>
     <a class="gh" href={repo}>GitHub</a>
   </nav>
 </header>
