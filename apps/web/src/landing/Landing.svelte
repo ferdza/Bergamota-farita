@@ -3,7 +3,7 @@
 
   const base = import.meta.env.BASE_URL; // "/" at root, "/bergamota-farita/" on GitHub Pages
   const repo = "https://github.com/ferdza/bergamota-farita";
-  const site = "https://ferdza.github.io/bergamota-farita/"; // where this page is hosted
+  const site = "https://ferdza.github.io/Bergamota-farita/"; // where this page is hosted (Pages path is case-sensitive)
   const parts = [
     { name: "Renegade", what: "Rewrites every arm64e Mach-O and the whole shared cache for a CPU without pointer authentication, then builds the HFS+ root.", where: "userdata · from your IPSW" },
     { name: "Heartwood", what: "Apple's open-source XNU kernel with our patches for the Snapdragon 845.", where: "xnu-11215" },
@@ -20,7 +20,7 @@
 </script>
 
 <div class="live">
-  <a href={site}><span class="dot" aria-hidden="true"></span> ferdza.github.io/bergamota-farita <span class="arrow" aria-hidden="true">↗</span></a>
+  <a href={site}><span class="dot" aria-hidden="true"></span> ferdza.github.io/Bergamota-farita <span class="arrow" aria-hidden="true">↗</span></a>
 </div>
 
 <header class="nav">

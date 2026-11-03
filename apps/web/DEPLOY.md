@@ -24,8 +24,13 @@ gh workflow run "web (GitHub Pages)" -R ferdza/bergamota-farita --ref fajita
 
 The site is then at:
 
-- **https://ferdza.github.io/bergamota-farita/** — the landing page
-- **https://ferdza.github.io/bergamota-farita/flash/** — the flasher / control plane
+- **https://ferdza.github.io/Bergamota-farita/** — the landing page
+- **https://ferdza.github.io/Bergamota-farita/flash/** — the flasher / control plane
+
+(The repo is named `Bergamota-farita` with a capital B. GitHub Pages paths are
+case-sensitive and do **not** redirect, so the capital B is required — the
+lowercase path 404s. `BERGA_BASE` is derived from the repo name automatically,
+so the build already matches.)
 
 ## The base path
 
