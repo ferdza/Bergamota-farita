@@ -65,6 +65,14 @@ test("image checks: boot needs ANDROID!, sizes, partition fit", async () => {
   const bootImg = new Uint8Array(2 << 20);
   bootImg.set(new TextEncoder().encode("ANDROID!"));
   assert.deepEqual((await checkImage(bufferSource(bootImg), "boot.img", "boot", info)).problems, []);
+  // a bootloader-only Enxerto (~0.5 MiB) is a valid boot image for `fastboot boot`
+  const small = new Uint8Array(520 * 1024);
+  small.set(new TextEncoder().encode("ANDROID!"));
+  assert.deepEqual((await checkImage(bufferSource(small), "enxerto-boot.img", "boot", info)).problems, []);
+  // but something trivially tiny is still refused on size
+  const tiny = new Uint8Array(4096);
+  tiny.set(new TextEncoder().encode("ANDROID!"));
+  assert.ok((await checkImage(bufferSource(tiny), "t.img", "boot", info)).problems.some((p) => /64 KiB/.test(p)));
   const tooBig = makeSparse([{ type: "skip", blocks: 2048 }]); // 8 MiB > 4 MiB userdata in this fake
   assert.ok((await checkImage(bufferSource(tooBig), "big.simg", "userdata", info)).problems.some((p) => /holds only/.test(p)));
 });

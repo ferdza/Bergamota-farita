@@ -110,7 +110,10 @@ export async function checkImage(src: ByteSource, name: string, partition: Parti
   } else {
     if (image.sparse) problems.push(`${name} is a sparse image; ${partition} takes a plain image.`);
     if (partition === "boot") {
-      if (size < MiB || size > 64 * MiB) problems.push(`${name}: a boot image must be 1-64 MiB.`);
+      // The ANDROID! header is the real check. The size floor is low on purpose: a bootloader-only
+      // Enxerto (no kernel payload) is ~0.5 MiB, and `fastboot boot`-ing it is a valid bring-up test;
+      // a full iOS boot image (Enxerto + kernel) is ~20 MiB. Both are well under 64 MiB.
+      if (size < 64 * 1024 || size > 64 * MiB) problems.push(`${name}: a boot image must be 64 KiB – 64 MiB.`);
       const magic = new TextDecoder().decode(await src.read(0, 8));
       if (magic !== "ANDROID!") problems.push(`${name} is not an Android boot image (no ANDROID! header).`);
     }
