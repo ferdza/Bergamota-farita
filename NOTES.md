@@ -27,9 +27,19 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
 * **Local build deps** (Linux, no Mac): `gcc-aarch64-linux-gnu`, `cpio`,
   `device-tree-compiler`, and a working `mkbootimg` — the Debian one needs a
   `gki` stub module on `PYTHONPATH` (header v1 uses no GKI cert).
-* **Next:** Heartwood device patches for fajita on xnu-11215 — RMI4 Synaptics
-  touch (port from the iOS-16 fajita driver; Bergamota's touch is Goodix/NVT/FTS,
-  needs a `TOUCH_RMI4` kind) and the panel. Then wire fajita into the web flasher.
+* **Heartwood touch (done, patch `0252-fajita-touch-rmi4.patch`):** adds a
+  `TOUCH_RMI4` kind, a `touch_fajita` board (SE12 i2c@a90000), `sweet_board_fajita()`
+  in sweet_board.h, and a self-contained fajita bring-up thread (two TLMM tiles:
+  NORTH i2c gpio49/50 + reset gpio99, EAST VIO gpio88 + ATTN gpio125; ldoa28; SE
+  clock; RMI4 PDT F01/F12; F12 2D polling) reusing touch_msg/touch_se_init/
+  touch_report. Board-gated; sweet/beryllium untouched. Verified locally without a
+  Mac: the new functions syntax-check clean (stubbed helpers) and `git apply
+  --check` passes on top of the full patches-11215 series. **Not yet run on
+  device.** Reconstruction method (no Mac): filterdiff the sweet_touch.c /
+  sweet_board.h hunks of the series in order to rebuild the file, edit, git diff.
+* **Next:** CI compile-check of 0252 (xnu.yml, `--ref fajita`); then the panel,
+  then wire fajita into the web flasher (apps/web). The local xnu-cc.py check
+  needs a CI buildtree artifact first.
 
 
 ### >>> 2026-10-26: Wi-Fi, PAC fallback and Chlorophyll-on-Turnip merged into develop (user) <<<
