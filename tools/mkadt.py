@@ -70,6 +70,26 @@ BOARDS = {
         # /arm-io/bluetooth for bluetoothd/BlueTool (docs/BT_IOS_TRANSPORT.md 3.2). Sweet has no
         # Bluetooth driver: the node is beryllium only.
         bluetooth=True),
+    'fajita': dict(
+        # OnePlus 6T (SDM845, same SoC as beryllium). Stock cont_splash is at the
+        # same base as beryllium (0x9d400000); the panel is 1080x2340 (beryllium
+        # is 2246). Verified against the working iOS-16 fajita port's mkadt
+        # (FB=0x9d400000/0x2400000, 1080x2340).
+        fb=(0x9d400000, 0x2400000), fb_wh=(1080, 2340),
+        # keep 'xiaomi,sweet' so SweetPlatformExpert matches, as beryllium does
+        compat=['oneplus,fajita', 'xiaomi,sweet', 'qcom,sdm845'],
+        # SDM845 is identical to beryllium: 0-3 A55, 4-7 A75
+        cpu_compat='qcom,kryo385', big_from=4, freqs=(1766400000, 2803200000),
+        # low-bank window: start with beryllium's; RE-VERIFY against fajita's live
+        # FDT carve-outs before trusting it on device (--highmem is used on phone)
+        mem=(0x9f800000, 0x0f800000),
+        # synthetic locally-administered MACs, as beryllium (not the phone's)
+        chosen_extra=[
+            ('mac-address-wifi0', bytes([0x02, 0x00, 0x5e, 0x77, 0xe0, 0x02])),
+            ('mac-address-bluetooth0', BT_MAC),
+        ],
+        # fajita has the same WCN3990; the /arm-io/bluetooth node applies
+        bluetooth=True),
 }
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
