@@ -37,9 +37,22 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
   --check` passes on top of the full patches-11215 series. **Not yet run on
   device.** Reconstruction method (no Mac): filterdiff the sweet_touch.c /
   sweet_board.h hunks of the series in order to rebuild the file, edit, git diff.
-* **Next:** CI compile-check of 0252 (xnu.yml, `--ref fajita`); then the panel,
-  then wire fajita into the web flasher (apps/web). The local xnu-cc.py check
-  needs a CI buildtree artifact first.
+* **Web flasher (done):** `apps/web` now supports fajita, not just beryllium —
+  `SUPPORTED_PRODUCTS` map + `productName()` in `flasher.ts` (the gate still blocks
+  any other phone and shows its real product), ConfirmStep label. Shared iOS-18
+  (iPhone11,8) root, so no new profile. **TODO: confirm the OnePlus 6T's exact
+  `fastboot getvar product`; if not "fajita", add it to SUPPORTED_PRODUCTS.**
+  (Deploying the fork's apps/web for real use is a separate hosting step.)
+* **CI:** xnu.yml dispatched on `fajita` — run **41701773048** (compile-check of
+  0252 on the real toolchain; also yields the buildtree for local xnu-cc.py).
+* **Independent validation (docs/FORKS_SURVEY.md, edi194/ios-fajita):** confirms
+  every Enxerto value — header v1 + Image.gz-dtb, SDM845 v2.1 msm-id 0x141/0x20001
+  (= the fdt0 we kept), IMEM 0x146bf65c, PS_HOLD 0xc264000, GIC 0x17a00000/60000,
+  UFS 0x1d84000 (2.1), RAM 0x1_00000000 + 5.946 GiB. (Also: OnePlus 7T uses the
+  same S3706/RMI4 touch — a second reference for 0252.)
+* **Next:** confirm 0252 compiles (CI 41701773048) → then display/panel (the ADT
+  geometry is 1080x2340; beryllium rides the ABL-lit panel + MDP page-flip, fajita
+  likely the same — verify on device) and keys; then a device bring-up boot.
 
 
 ### >>> 2026-10-26: Wi-Fi, PAC fallback and Chlorophyll-on-Turnip merged into develop (user) <<<
