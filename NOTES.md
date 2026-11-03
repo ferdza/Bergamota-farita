@@ -55,6 +55,21 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
   core. Direction (user): port the WHOLE Mac control plane to the browser
   (Chromium: WebUSB CDC-ECM + WASM TCP/IP for live log / SSH / metrics / sideload;
   CI artifact download instead of local kernel build). Incremental.
+  - **LIVE on Pages (2026-11-03):** https://ferdza.github.io/Bergamota-farita/
+    (flasher at /flash/). Repo was renamed to **Bergamota-farita** (capital B);
+    github.io paths are case-sensitive and do NOT redirect, so the capital B is
+    required (lowercase 404s). Pages deploy needed the github-pages environment to
+    allow the deploy branch — user made `fajita` the default branch to fix it.
+  - **UI polish (e866b98, from live feedback):** IPSW step lists the exact Apple
+    restore IPSW per profile (iPhone XR 18.7.8 22H352, iPhone 11 26.6.2 23G90) with
+    filename/size/direct updates.cdn-apple.com link (URLs+sizes in profiles.ts);
+    browser OPFS storage now has a delete button (Choose step pills + a new
+    "Browser storage" panel in Advanced; storedImages()/removeStored() in
+    patcher.ts, session.forgetPicked()); device name no longer hard-coded "Poco
+    F1" — uses productName() (sdm845 -> OnePlus 6T). svelte-check 0 errors; Pages
+    build+deploy green (run 41738902151).
+  - **Next control-plane step:** wire `boot` into the UI (Boot Queue: pick image →
+    Boot, no flash), then live kernel log over WebUSB CDC-ECM.
 * **Independent validation (docs/FORKS_SURVEY.md, edi194/ios-fajita):** confirms
   every Enxerto value — header v1 + Image.gz-dtb, SDM845 v2.1 msm-id 0x141/0x20001
   (= the fdt0 we kept), IMEM 0x146bf65c, PS_HOLD 0xc264000, GIC 0x17a00000/60000,
