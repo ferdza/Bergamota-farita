@@ -3,6 +3,7 @@
 
   const base = import.meta.env.BASE_URL; // "/" at root, "/bergamota-farita/" on GitHub Pages
   const repo = "https://github.com/ferdza/bergamota-farita";
+  const site = "https://ferdza.github.io/bergamota-farita/"; // where this page is hosted
   const parts = [
     { name: "Renegade", what: "Rewrites every arm64e Mach-O and the whole shared cache for a CPU without pointer authentication, then builds the HFS+ root.", where: "userdata · from your IPSW" },
     { name: "Heartwood", what: "Apple's open-source XNU kernel with our patches for the Snapdragon 845.", where: "xnu-11215" },
@@ -17,6 +18,10 @@
     ["Wi-Fi, cellular, audio, camera, sensors", "Not yet", "no"],
   ];
 </script>
+
+<div class="live">
+  <a href={site}><span class="dot" aria-hidden="true"></span> ferdza.github.io/bergamota-farita <span class="arrow" aria-hidden="true">↗</span></a>
+</div>
 
 <header class="nav">
   <a class="mark" href={base} aria-label="Bergamota home"><img src="{base}favicon.svg" alt="" width="34" height="34" /> Bergamota</a>
@@ -90,8 +95,26 @@
 </footer>
 
 <style>
+  .live {
+    position: absolute; inset: 0 0 auto 0; z-index: 6;
+    display: flex; justify-content: center;
+    padding: 9px 16px;
+    background: color-mix(in srgb, var(--ink) 92%, transparent);
+  }
+  .live a {
+    display: inline-flex; align-items: center; gap: 9px;
+    font-size: 13px; font-weight: 700; letter-spacing: 0.01em;
+    color: var(--white); text-decoration: none;
+  }
+  .live a:hover { text-decoration: underline; }
+  .live .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--leaf);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--leaf) 35%, transparent);
+  }
+  .live .arrow { opacity: 0.7; }
+
   .nav {
-    position: absolute; inset: 0 0 auto 0; z-index: 5;
+    position: absolute; inset: 36px 0 auto 0; z-index: 5;
     display: flex; align-items: center; justify-content: space-between;
     padding: 28px clamp(16px, 3.4vw, 48px);
   }
