@@ -2,6 +2,36 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> 2026-11-03: fajita (OnePlus 6T) board added — Enxerto builds, iOS 18 <<<
+New workstream in this fork (`ferdza/bergamota-farita`, branch `fajita`): add the
+**OnePlus 6T (fajita, SDM845/Adreno 630 — same SoC as beryllium)** as a board, on
+the iOS-18 line. Decided with the user: fork Bergamota + add a fajita board (not a
+separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
+(confirmed from `apps/web` Renegade profiles).
+* **Install path = the web flasher (`apps/web`, WebUSB + Renegade WASM)** — the
+  user has NO Mac, so the macOS Bergamota app is skipped. **MEMORY NOTE (user):**
+  later we will extend the web flasher to reclaim more of the Mac app's functions.
+* **Done & pushed:**
+  - `tools/mkadt.py` `BOARDS['fajita']` (fb 0x9d400000/1080x2340, SDM845 CPU,
+    `oneplus,fajita`); `--board fajita` builds a valid ADT.
+  - **Enxerto fajita board**: `enxerto/board.h` (`BOARD_FAJITA`: 1080x2340,
+    cont_splash 0x9d400000 confirmed from the stock DTB, imem 0x146bf65c = same
+    SDM845 as beryllium) and `enxerto/build.sh` (a `fajita` case + a shared
+    `SDM845` flag so the header-v1/appended-DTB image path covers both boards).
+  - **Local build is GREEN** (no Mac): `BOARD=fajita enxerto/build.sh` cross-
+    compiles, host_test + fastboot_test 511/0, produces `enxerto-boot.img` with
+    the fajita DTB appended behind the gzip kernel.
+* **DTB:** extracted the OnePlus 6T stock boot.img DTB (user-supplied). It is 3
+  concatenated SDM845 SoC FDTs (v2.1/v2/v1); **v2.1 = fdt0 is fajita's**, kept at
+  `dtb/fajita/dtb` (gitignored, out of git per the device-dump rule).
+* **Local build deps** (Linux, no Mac): `gcc-aarch64-linux-gnu`, `cpio`,
+  `device-tree-compiler`, and a working `mkbootimg` — the Debian one needs a
+  `gki` stub module on `PYTHONPATH` (header v1 uses no GKI cert).
+* **Next:** Heartwood device patches for fajita on xnu-11215 — RMI4 Synaptics
+  touch (port from the iOS-16 fajita driver; Bergamota's touch is Goodix/NVT/FTS,
+  needs a `TOUCH_RMI4` kind) and the panel. Then wire fajita into the web flasher.
+
+
 ### >>> 2026-10-26: Wi-Fi, PAC fallback and Chlorophyll-on-Turnip merged into develop (user) <<<
 * Wi-Fi `claude/wlan26-chip-037a03` was already develop (f4b36c1, boot 54 WPA2 join). Merged `claude/peaceful-saha-28595a` (xnu-12377 1019 PAC emulation, tools/pacemu) and `claude/chlorophyll-turnip-c432e2` (freedreno-sweet syncobjs + prime fds, sweetgpu, notes; NOTES conflict: both sections kept below).
 * Chlorophyll: `ios26` fast-forwarded to `turnip` d3cb665 (Turnip runtime, Mesa 26.2.5, guard-page slack); `gpu/metal` gitlink dbfcd6d -> d3cb665. The Turnip session's boot 54-55 notes (SpringBoard SMMU faults, guard-page fix) are not yet in NOTES on this branch. Nothing pushed (develop and Chlorophyll ios26 are local).

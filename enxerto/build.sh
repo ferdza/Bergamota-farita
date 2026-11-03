@@ -27,10 +27,15 @@ CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align
 # BOOTPAUSE=<ms>: wait that long before jumping to xnu (debug photos of the log).
 [ -z "${BOOTPAUSE:-}" ] || CFLAGS="$CFLAGS -DBOOT_PAUSE_MS=${BOOTPAUSE}"
 case $BOARD in
-sweet)		DTB=${DTB:-../dtb/boot_unpacked/dtb} ;;
-beryllium)	DTB=${DTB:-../dtb/beryllium/dtb}; CFLAGS="$CFLAGS -DBOARD_BERYLLIUM" ;;
+sweet)		DTB=${DTB:-../dtb/boot_unpacked/dtb}; BOARDDEF= ;;
+beryllium)	DTB=${DTB:-../dtb/beryllium/dtb}; BOARDDEF=-DBOARD_BERYLLIUM ;;
+fajita)		DTB=${DTB:-../dtb/fajita/dtb}; BOARDDEF=-DBOARD_FAJITA ;;
 *)		echo "error: unknown BOARD=$BOARD" >&2; exit 1 ;;
 esac
+CFLAGS="$CFLAGS $BOARDDEF"
+# beryllium and fajita are both SDM845: the ROM boot.img is header v1 with the DTB
+# appended behind the gzip'd kernel. sweet (SM7150) uses header v2 with --dtb.
+case $BOARD in beryllium|fajita) SDM845=1 ;; *) SDM845=0 ;; esac
 [ -f "$DTB" ] || { echo "error: $DTB missing (stock DTB of the phone, see README)" >&2; exit 1; }
 mkdir -p out
 # Bergamota fastboot (docs/BERGAMOTA_FASTBOOT.md): runs by itself when there is no payload; BERGAMOTA=1
@@ -64,7 +69,7 @@ if [ -n "${1:-}" ]; then
 else
 	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
 fi
-if [ "$BOARD" = beryllium ]; then
+if [ "$SDM845" = 1 ]; then
 	# Same layout as the ROM's boot.img: header v1, Image.gz with the DTB
 	# appended (ABL gunzips the kernel and finds the DTB behind the stream).
 	gzip -9 -n -c out/Image | cat - "$DTB" > out/Image.gz-dtb
@@ -82,7 +87,7 @@ fi
 # Charging-screen test image (docs/BERGAMOTA_CHARGE.md): no payload, cmdline forces charging mode, so
 # `fastboot boot out/charge-test.img` shows the off-mode charging screen on a phone that is just on.
 (cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk-empty.bin)
-if [ "$BOARD" = beryllium ]; then
+if [ "$SDM845" = 1 ]; then
 	mkbootimg --header_version 1 --kernel out/Image.gz-dtb --ramdisk out/ramdisk-empty.bin \
 		--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
 		--tags_offset 0x100 --pagesize 4096 --os_version 16.0.0 --os_patch_level 2025-06 \
@@ -90,11 +95,11 @@ if [ "$BOARD" = beryllium ]; then
 fi
 # Host render of the console layout and the boot screen (out/host.ppm, out/preview/*.ppm).
 mkdir -p out/preview
-cc -O1 -Wall $([ "$BOARD" = beryllium ] && echo -DBOARD_BERYLLIUM) $([ "${BOOTLOG:-0}" = 0 ] || echo -DBOOTUI_LOG=1) -o out/host_test console.c artdraw.c bootui.c fbui.c charge.c host_test.c && ./out/host_test
+cc -O1 -Wall $BOARDDEF $([ "${BOOTLOG:-0}" = 0 ] || echo -DBOOTUI_LOG=1) -o out/host_test console.c artdraw.c bootui.c fbui.c charge.c host_test.c && ./out/host_test
 # Host tests of the fastboot protocol, the sparse parser, GPT/allowlist storage and BLAKE2b (fake storage).
 cc -O1 -Wall -Wextra -o out/fastboot_test fastboot.c sparse.c storage.c blake2b.c fastboot_test.c && ./out/fastboot_test
 # The image Bergamota (the Mac app) boots from ABL with `fastboot boot`: fastboot forced on, empty ramdisk.
-if [ "$BOARD" = beryllium ]; then
+if [ "$SDM845" = 1 ]; then
 	mkbootimg --header_version 1 --kernel out/Image.gz-dtb --ramdisk out/ramdisk-empty.bin \
 		--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
 		--tags_offset 0x100 --pagesize 4096 --os_version 16.0.0 --os_patch_level 2025-06 \
