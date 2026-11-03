@@ -165,6 +165,37 @@ export async function flash(job: FlashJob): Promise<boolean> {
   return true;
 }
 
+export interface BootJob {
+  fb: FastbootDevice;
+  src: ByteSource;
+  onProgress: (p: Progress) => void;
+}
+
+/** Streams a plain boot image whole and runs it once with `fastboot boot`.
+ * Nothing is written to any partition: the phone loads this image and boots it
+ * now, and the next restart returns to normal. This is the Mac app's Boot Queue
+ * and the safe way to try an Enxerto or kernel image during bring-up. */
+export async function bootImage(job: BootJob): Promise<void> {
+  const { fb, src, onProgress } = job;
+  const total = src.size;
+  const startedAt = performance.now();
+  let sentBytes = 0;
+  const report = (phase: Progress["phase"]) => onProgress({ piece: 1, pieces: 1, phase, sentBytes, totalBytes: total, startedAt });
+  report("sending");
+  await fb.download(total, rawBytes(src), (n) => {
+    sentBytes += n;
+    report("sending");
+  });
+  report("writing"); // here "writing" means the phone is loading and starting the image
+  await fb.boot();
+  onProgress({ piece: 1, pieces: 1, phase: "done", sentBytes: total, totalBytes: total, startedAt });
+}
+
+/** The whole source, verbatim, in buffers of `bufBytes` (a boot image is sent as-is, never resparsed). */
+async function* rawBytes(src: ByteSource, bufBytes = 1 << 20): AsyncGenerator<Uint8Array> {
+  for (let o = 0; o < src.size; o += bufBytes) yield await src.read(o, Math.min(bufBytes, src.size - o));
+}
+
 export function fmtBytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e8 ? 0 : 1)} MB`;

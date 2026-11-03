@@ -12,24 +12,31 @@
   });
 
   const p = $derived(session.progress);
+  const boot = $derived(session.op === "boot");
   const frac = $derived(p && p.totalBytes ? p.sentBytes / p.totalBytes : 0);
   const pct = $derived(session.flashState === "done" ? 100 : Math.floor(frac * 100));
   const elapsed = $derived(p ? (now - p.startedAt) / 1000 : 0);
   const rate = $derived(p && elapsed > 1 ? p.sentBytes / elapsed : 0);
   const left = $derived(rate ? (p!.totalBytes - p!.sentBytes) / rate : NaN);
-  const titles = { flashing: "Writing", done: "Done.", stopped: "Stopped.", error: "The flash failed.", idle: "" };
 </script>
 
 <p class="pct" aria-hidden="true">{pct}</p>
 <section class="sheet" aria-labelledby="flash-title">
   <h2 id="flash-title">
-    {#if session.flashState === "flashing"}Writing {session.partition === "userdata" ? "the iOS root" : session.partition}.{:else}{titles[session.flashState]}{/if}
+    {#if session.flashState === "flashing"}{boot ? "Starting the image…" : `Writing ${session.partition === "userdata" ? "the iOS root" : session.partition}.`}
+    {:else if session.flashState === "done"}{boot ? "Booted." : "Done."}
+    {:else if session.flashState === "stopped"}Stopped.
+    {:else if session.flashState === "error"}{boot ? "The boot failed." : "The flash failed."}{/if}
   </h2>
 
   {#if session.flashState === "flashing"}
-    <p>Keep the cable in and this tab open. The phone can sit on its fastboot screen.</p>
+    <p>{boot ? "The phone is loading the image and will boot it. When it jumps, the fastboot connection drops — that is normal." : "Keep the cable in and this tab open. The phone can sit on its fastboot screen."}</p>
   {:else if session.flashState === "done"}
-    <p>{session.partition} is written{session.rebooted ? " and the phone is restarting" : ""}. {session.partition === "userdata" ? "The first boot of iOS takes a few minutes." : ""}</p>
+    {#if boot}
+      <p>The phone is running the image now — <b>nothing was written</b>. Watch its screen. Restart it (Power) to return to normal.</p>
+    {:else}
+      <p>{session.partition} is written{session.rebooted ? " and the phone is restarting" : ""}. {session.partition === "userdata" ? "The first boot of iOS takes a few minutes." : ""}</p>
+    {/if}
   {:else if session.flashState === "stopped"}
     <p>Stopped after piece {p?.piece} of {p?.pieces}. The partition is only partly written: flash again before booting it.</p>
   {:else if session.flashState === "error"}
@@ -50,14 +57,19 @@
     </div>
   {/if}
   <p class="muted" aria-live="polite">
-    {#if p}Piece {p.piece} of {p.pieces} · {p.phase === "writing" ? "the phone is writing it" : p.phase === "sending" ? "sending" : "finished"}{/if}
+    {#if p && boot}{p.phase === "writing" ? "the phone is starting it" : p.phase === "sending" ? "sending the image" : "started"}
+    {:else if p}Piece {p.piece} of {p.pieces} · {p.phase === "writing" ? "the phone is writing it" : p.phase === "sending" ? "sending" : "finished"}{/if}
   </p>
 
   <div class="row">
     {#if session.flashState === "flashing"}
-      <button class="btn ghost" disabled={session.stopRequested} onclick={() => (session.stopRequested = true)}>{session.stopRequested ? "Stopping after this piece…" : "Stop after this piece"}</button>
+      {#if !boot}<button class="btn ghost" disabled={session.stopRequested} onclick={() => (session.stopRequested = true)}>{session.stopRequested ? "Stopping after this piece…" : "Stop after this piece"}</button>{/if}
     {:else if session.flashState === "done"}
-      {#if !session.rebooted}<button class="btn leaf" onclick={() => session.reboot()}>Restart the phone</button>{/if}
+      {#if boot}
+        <button class="btn leaf" onclick={() => { session.resetFlash(); session.go("Connect"); }}>Boot another image</button>
+      {:else if !session.rebooted}
+        <button class="btn leaf" onclick={() => session.reboot()}>Restart the phone</button>
+      {/if}
       <a class="btn ghost" href={base}>Back to Bergamota</a>
     {:else}
       <button class="btn" onclick={() => session.resetFlash()}>Try again</button>

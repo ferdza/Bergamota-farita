@@ -38,17 +38,18 @@ test("refuses partitions and commands outside the allowlist", async () => {
     // @ts-expect-error deliberately not a Partition
     await assert.rejects(fb.flash(p), FastbootError);
   }
-  // the private command() refuses everything not allowlisted
+  // the private command() refuses everything not allowlisted. `boot` itself is allowed (test-boot),
+  // but only exactly: anything with arguments or a different name is still refused.
   const cmd = (fb as unknown as { command(c: string): Promise<unknown> }).command.bind(fb);
-  for (const c of ["erase:userdata", "format:userdata", "oem unlock", "flashing unlock", "set_active:a", "flash:modem", "boot"]) {
+  for (const c of ["erase:userdata", "format:userdata", "oem unlock", "flashing unlock", "set_active:a", "flash:modem", "boot:evil", "bootloader", "boot "]) {
     await assert.rejects(cmd(c), /not an allowed command/);
   }
   assert.deepEqual(phone.log, [], "nothing reached the phone");
 });
 
-test("a phone that is not a Poco F1, or locked, is refused", async () => {
+test("an unsupported, or locked, phone is refused", async () => {
   const other = await identify(await FastbootDevice.open(new FakePhone(4096, { ...ABL, product: "sagit" }).usb()));
-  assert.match(phoneProblems(other)[0], /not a Poco F1/);
+  assert.match(phoneProblems(other)[0], /Unsupported phone: it says it is "sagit"/);
   const locked = await identify(await FastbootDevice.open(new FakePhone(4096, { ...ABL, unlocked: "no" }).usb()));
   assert.match(phoneProblems(locked)[0], /locked/);
   const oldBerga = await identify(await FastbootDevice.open(new FakePhone(4096, { ...ABL, "version-bootloader": "bergamota-1" }).usb()));

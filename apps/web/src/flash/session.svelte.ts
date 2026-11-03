@@ -2,7 +2,7 @@
 // flash itself. One instance per page.
 
 import { ALLOWED_PARTITIONS, FastbootDevice, FastbootError, type LogKind, type Partition } from "../lib/fastboot.ts";
-import { checkImage, flash, identify, phoneProblems, SAFE_PIECE, type Checked, type PhoneInfo, type Progress } from "../lib/flasher.ts";
+import { bootImage, checkImage, flash, identify, phoneProblems, SAFE_PIECE, type Checked, type PhoneInfo, type Progress } from "../lib/flasher.ts";
 import { blobSource, type ByteSource } from "../lib/sparse.ts";
 import { discardImage, fetchTools, NEEDED_BYTES, Patcher, sshKeyProblem, storageRoom } from "../patcher/patcher.ts";
 import type { BuildSummary, IpswInfo } from "../patcher/wasm.ts";
@@ -69,6 +69,8 @@ class Session {
 
   pieceCap = $state(SAFE_PIECE);
   rebootWhenDone = $state(true);
+  // the Flash screen is shared by two operations: writing a partition, and booting an image once (no write)
+  op = $state<"flash" | "boot">("flash");
   flashState = $state<"idle" | "flashing" | "done" | "stopped" | "error">("idle");
   flashError = $state<string | null>(null);
   progress = $state.raw<Progress | null>(null);
@@ -224,9 +226,54 @@ class Session {
     await this.recheck();
   }
 
+  /** Boot the chosen (boot) image once with `fastboot boot`: nothing is written, the phone just runs it. */
+  async startBoot() {
+    const { fb, picked, checked } = this;
+    if (!fb || !picked || !checked || checked.problems.length || this.phoneProblems.length) return;
+    if (this.partition !== "boot") return;
+    this.op = "boot";
+    this.flashState = "flashing";
+    this.flashError = null;
+    this.stopRequested = false;
+    this.rebooted = false;
+    this.progress = null;
+    this.go("Flash");
+    let lock: WakeLockSentinel | null = null;
+    try {
+      lock = await navigator.wakeLock?.request("screen");
+    } catch {
+      /* not allowed: fine */
+    }
+    let phase: Progress["phase"] = "sending";
+    try {
+      await bootImage({
+        fb,
+        src: picked.src,
+        onProgress: (p) => {
+          phase = p.phase;
+          this.progress = p;
+        },
+      });
+      this.flashState = "done";
+      this.rebooted = true; // the phone left fastboot and is running the image
+    } catch (e) {
+      // the phone can drop off USB the instant it jumps to the image; that is a successful boot, not a failure
+      if ((phase as string) === "writing" && e instanceof Error && /disconnect|no answer|USB (read|write) failed|device.*lost|transfer/i.test(e.message)) {
+        this.flashState = "done";
+        this.rebooted = true;
+      } else {
+        this.flashState = "error";
+        this.flashError = e instanceof FastbootError ? e.message : explainUsb(e as Error);
+      }
+    } finally {
+      await lock?.release().catch(() => {});
+    }
+  }
+
   async startFlash() {
     const { fb, picked, checked } = this;
     if (!fb || !picked || !checked || checked.problems.length || this.phoneProblems.length) return;
+    this.op = "flash";
     this.flashState = "flashing";
     this.flashError = null;
     this.stopRequested = false;

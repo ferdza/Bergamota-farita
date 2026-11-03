@@ -14,6 +14,8 @@
     logo: ["This replaces the boot splash.", "Only the logo partition is written."],
   };
   const ready = $derived(typed.trim() === session.partition && !!c && !c.problems.length && !session.phoneProblems.length && !!session.fb);
+  // Booting a boot image writes nothing, so it needs no typed confirmation — just a valid image on a connected phone.
+  const canBoot = $derived(session.partition === "boot" && !!c && !c.problems.length && !session.phoneProblems.length && !!session.fb);
 </script>
 
 <section class="sheet" aria-labelledby="confirm-title">
@@ -31,8 +33,18 @@
       <tr><td>Afterwards</td><td>{session.rebootWhenDone ? "the phone restarts" : "the phone stays in fastboot"}</td></tr>
     </tbody>
   </table>
+  {#if session.partition === "boot"}
+    <div class="test">
+      <div class="test-txt">
+        <b>Just testing?</b>
+        <span>Boot this image once <b>without writing anything</b> (<code>fastboot boot</code>). The phone runs it now; the next restart returns to normal. The safe way to try an Enxerto or kernel build.</span>
+      </div>
+      <button class="btn leaf" disabled={!canBoot} onclick={() => session.startBoot()}>Boot once (test)</button>
+    </div>
+  {/if}
+
   <label class="type">
-    <span>Type <b>{session.partition}</b> to confirm</span>
+    <span>{session.partition === "boot" ? "Or write it for good — type" : "Type"} <b>{session.partition}</b> to confirm</span>
     <span class="confirm-row">
       <input bind:value={typed} autocomplete="off" spellcheck="false" aria-label={`Type ${session.partition} to confirm`} />
       <button class="btn danger" disabled={!ready} onclick={() => session.startFlash()}>Flash {session.partition}</button>
@@ -44,6 +56,11 @@
 <style>
   .warn { background: var(--warn); color: var(--white); padding: 22px 24px; border-radius: 4px; margin: 0 0 22px; }
   .warn b { font-size: 24px; font-weight: 850; display: block; margin-bottom: 4px; }
+  .test { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; background: var(--paper); border: 2px solid var(--leaf); border-radius: 8px; padding: 18px 20px; margin: 0 0 20px; }
+  .test-txt { display: grid; gap: 4px; max-width: 46ch; }
+  .test-txt b { font-size: 17px; }
+  .test-txt span { font-size: 14px; color: var(--ink-soft); }
+  .test .btn { white-space: nowrap; }
   .type { display: grid; gap: 8px; font-size: 15px; }
   .confirm-row { display: flex; gap: 14px; flex-wrap: wrap; }
   input { flex: 1; min-width: 180px; font: 600 16px var(--mono); padding: 14px 16px; border: 2px solid var(--ink); border-radius: 4px; background: var(--white); }
