@@ -1,6 +1,6 @@
 <script lang="ts">
   import { session } from "./session.svelte.ts";
-  import { fmtBytes, fmtDuration } from "../lib/flasher.ts";
+  import { fmtBytes, fmtDuration, productName } from "../lib/flasher.ts";
 
   let typed = $state("");
   const c = $derived(session.checked!);
@@ -23,7 +23,7 @@
   </div>
   <table class="summary">
     <tbody>
-      <tr><td>Phone</td><td>Poco F1 ({phone.product}), {phone.kind === "bergamota" ? `Bergamota fastboot ${phone.bootloader}` : "ABL fastboot"}</td></tr>
+      <tr><td>Phone</td><td>{productName(phone.product)} ({phone.product}), {phone.kind === "bergamota" ? `Bergamota fastboot ${phone.bootloader}` : "ABL fastboot"}</td></tr>
       <tr><td>Partition</td><td>{session.partition}{phone.partitionSize[session.partition] ? ` · ${fmtBytes(phone.partitionSize[session.partition]!)}` : ""}</td></tr>
       <tr><td>Image</td><td>{session.picked?.name} · {fmtBytes(session.picked?.size ?? 0)}{c.image.sparse ? " sparse" : ""}</td></tr>
       <tr><td>Sent as</td><td>{c.pieces.length === 1 ? "one piece" : `${c.pieces.length} pieces of up to ${fmtBytes(Math.max(...c.pieces.map((p) => p.bytes)))}`}</td></tr>

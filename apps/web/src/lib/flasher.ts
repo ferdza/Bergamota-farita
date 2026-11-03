@@ -59,10 +59,29 @@ function parseNumber(v: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/** Phones the flasher supports, keyed by the fastboot `product` string -> display name.
+ * Both are SDM845 and share the iOS-18 (iPhone11,8) root; they differ only in the boot
+ * image (the board's Enxerto) and their device specifics in the kernel.
+ * NOTE: confirm the OnePlus 6T's exact `fastboot getvar product` on-device; if it is not
+ * literally "fajita", add that string here (the gate stays safe meanwhile — it blocks and
+ * shows the real product so it can be added). */
+export const SUPPORTED_PRODUCTS: Record<string, string> = {
+  beryllium: "Poco F1",
+  fajita: "OnePlus 6T",
+};
+
+/** Friendly phone name for the UI, or the raw product string. */
+export function productName(product: string | null): string {
+  return (product && SUPPORTED_PRODUCTS[product]) ?? product ?? "unknown";
+}
+
 /** Reasons the page refuses to write to this phone at all. */
 export function phoneProblems(p: PhoneInfo): string[] {
   const out: string[] = [];
-  if (p.product !== "beryllium") out.push(`This is not a Poco F1: the phone says it is "${p.product ?? "unknown"}". Bergamota only supports beryllium.`);
+  if (!p.product || !(p.product in SUPPORTED_PRODUCTS)) {
+    const names = Object.values(SUPPORTED_PRODUCTS).join(" and ");
+    out.push(`Unsupported phone: it says it is "${p.product ?? "unknown"}". Bergamota supports ${names}.`);
+  }
   if (p.kind === "abl" && p.unlocked !== "yes") out.push("The bootloader is locked. Unlock it first (Xiaomi's unlock tool); a locked bootloader refuses every flash.");
   if (p.kind === "bergamota" && !p.bergamotaFlash) out.push("This Bergamota fastboot is too old to flash (no bergamota-flash). Use the phone's own fastboot: Power + Volume down.");
   return out;
