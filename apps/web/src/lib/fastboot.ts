@@ -20,7 +20,9 @@ function allowed(cmd: string): boolean {
   if (/^download:[0-9a-f]{8}$/.test(cmd)) return true;
   const flash = /^flash:(.+)$/.exec(cmd);
   if (flash) return (ALLOWED_PARTITIONS as readonly string[]).includes(flash[1]);
-  return cmd === "reboot" || cmd === "reboot-bootloader";
+  // `boot` runs the just-downloaded boot image once, without writing any partition
+  // (the Mac app's Boot Queue; exactly how device bring-up uses `fastboot boot`).
+  return cmd === "boot" || cmd === "reboot" || cmd === "reboot-bootloader";
 }
 
 const withTimeout = <T>(p: Promise<T>, ms: number, what: string): Promise<T> =>
@@ -202,8 +204,20 @@ export class FastbootDevice {
     await this.command(`flash:${partition}`, 10 * 60_000);
   }
 
+  /** boot the image just downloaded, once, without flashing anything.
+   * This is `fastboot boot <img>`: the phone runs it now; nothing on disk changes.
+   * The safe way to try an Enxerto/kernel image during bring-up. */
+  async boot(): Promise<void> {
+    await this.command("boot", 60_000);
+  }
+
   async reboot(): Promise<void> {
     await this.command("reboot", 15_000);
+  }
+
+  /** reboot into the bootloader (back to fastboot). */
+  async rebootBootloader(): Promise<void> {
+    await this.command("reboot-bootloader", 15_000);
   }
 }
 
