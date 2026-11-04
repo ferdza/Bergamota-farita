@@ -105,6 +105,23 @@ class SshSession {
     }
   }
 
+  output = $state<string | null>(null);
+
+  /** The processes using the most CPU (the little cores were pegged on the first boots). */
+  async topCpu() {
+    this.busy = "Listing processes…";
+    try {
+      const { text } = await this.run(
+        "if command -v ps >/dev/null 2>&1; then ps -A -o pid=,%cpu=,time=,comm= | sort -k2 -nr | head -25; else echo 'no ps on this root'; fi; echo; uptime 2>/dev/null",
+      );
+      this.output = text;
+    } catch (e) {
+      this.error = explain(e as Error);
+    } finally {
+      this.busy = null;
+    }
+  }
+
   /** A clean reboot: sweetreboot flushes the filesystem before resetting (never hard-reset iOS). */
   async reboot(mode: RebootMode) {
     this.busy = `Rebooting to ${mode}…`;

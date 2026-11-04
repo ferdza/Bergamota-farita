@@ -108,12 +108,14 @@
           <p class="muted">root@{PHONE_IP} · {sshs.server} · host key <code>{sshs.fingerprint}</code></p>
           <div class="row acts2">
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()}>Full kernel log (dmesg)</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.topCpu()}>Top CPU</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("fastboot")}>Reboot to fastboot</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("normal")}>Reboot</button>
             <button class="btn ghost" onclick={() => sshs.disconnect()}>Disconnect</button>
           </div>
           {#if sshs.busy}<p class="muted">{sshs.busy}</p>{/if}
           {#if sshs.error}<p class="problem">{sshs.error}</p>{/if}
+          {#if sshs.output}<pre class="out">{sshs.output}</pre>{/if}
           <p class="muted">Leave iOS with these buttons, not a hard reset: they flush the disk first.</p>
           <Terminal />
         {/if}
@@ -199,6 +201,7 @@
   .pub { word-break: break-all; font-size: 11.5px; }
   .acts2 { display: flex; gap: 10px; flex-wrap: wrap; }
   .ok { color: var(--leaf); font-weight: 700; margin: 0; }
+  .out { background: var(--ink); color: #e8e6dc; font: 400 12px/1.5 var(--mono); padding: 12px 14px; border-radius: 6px; overflow-x: auto; margin: 0; max-height: 40vh; }
   .note { font-size: 13px; color: var(--ink-soft); margin: 0; }
   .problem { background: #fdecea; color: #6b1d0c; padding: 12px 16px; border-radius: 6px; margin: 0; }
 
