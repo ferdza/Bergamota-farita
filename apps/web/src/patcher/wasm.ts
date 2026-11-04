@@ -52,6 +52,7 @@ interface Exports {
   rr_prepare_ipa(p: number, n: number): number;
   rr_meta_ptr(): number;
   rr_meta_len(): number;
+  rr_remove_jobs(p: number, n: number, names: number, namesLen: number): number;
 }
 
 export interface PreparedIpa {
@@ -147,6 +148,22 @@ export class Renegade {
     if (rc !== 0) throw new PatcherError(new TextDecoder().decode(out));
     const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, this.x.rr_meta_ptr(), this.x.rr_meta_len())));
     return { tar: out, meta };
+  }
+
+  /**
+   * launchd.plist without the named jobs (Label, its last component or the program's file name; [] = the default
+   * "unported" list of renegade::tweaks::UNPORTED_JOBS). Returns the new plist and the labels removed.
+   */
+  removeJobs(launchdPlist: Uint8Array, names: string[] = []): { plist: Uint8Array; removed: string[] } {
+    const nb = new TextEncoder().encode(names.join(","));
+    const p = this.put(launchdPlist), q = this.put(nb);
+    const rc = this.x.rr_remove_jobs(p, launchdPlist.length, q, nb.length);
+    this.x.rr_free(p, launchdPlist.length);
+    this.x.rr_free(q, nb.length);
+    const out = new Uint8Array(this.x.memory.buffer, this.x.rr_result_ptr(), this.x.rr_result_len()).slice();
+    if (rc !== 0) throw new PatcherError(new TextDecoder().decode(out));
+    const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, this.x.rr_meta_ptr(), this.x.rr_meta_len())));
+    return { plist: out, removed: meta.removed };
   }
 
   /** The module with no IPSW, image or tools behind it: for the single-file calls (linkDylib). */

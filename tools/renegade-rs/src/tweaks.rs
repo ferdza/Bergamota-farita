@@ -974,3 +974,45 @@ impl Fs for TreeFs<'_> {
         &self.owners
     }
 }
+
+/// The jobs the web page parks on a running root ("Disable unported services"): daemons for hardware this port does not
+/// drive yet, or that crash-loop on it (logs 2026-11-04: bluetoothd 100 crashes, wifip2pd 44 respawns, fairplayd.H2 and
+/// spaceattributiond 46, softwareupdated / webbookmarksd crashing). Matched by Label or by the program's file name.
+pub const UNPORTED_JOBS: [&str; 8] =
+    ["bluetoothd", "wifip2pd", "fairplayd.H2", "spaceattributiond", "softwareupdated", "webbookmarksd", "corecaptured", "safetyalertsd"];
+
+/// The program file name of a launchd job (Program, else ProgramArguments[0]).
+fn job_program(j: &Value) -> Option<String> {
+    let p = j.get("Program").and_then(Value::as_str).map(str::to_string).or_else(|| match j.get("ProgramArguments") {
+        Some(Value::Array(a)) => a.first().and_then(Value::as_str).map(str::to_string),
+        _ => None,
+    })?;
+    Some(p.rsplit('/').next().unwrap_or(&p).to_string())
+}
+
+/// launchd.plist (the cache launchd 18 reads, binary or XML) without the jobs whose Label, or whose program's file name,
+/// is in `names`. Returns the new plist (binary) and the labels removed; the caller keeps the original to restore.
+pub fn remove_jobs(launchd_plist: &[u8], names: &[&str]) -> Result<(Vec<u8>, Vec<String>)> {
+    let mut pl = plist::parse(launchd_plist)?;
+    let root = dict_mut(&mut pl, "launchd.plist")?;
+    let mut removed = Vec::new();
+    for sect in root.values_mut() {
+        let Value::Dict(sect) = sect else { continue };
+        let gone: Vec<String> = sect
+            .iter()
+            .filter(|(_, j)| {
+                let label = j.get("Label").and_then(Value::as_str).unwrap_or_default();
+                let leaf = label.rsplit('.').next().unwrap_or(label);
+                names.iter().any(|n| *n == label || job_program(j).as_deref() == Some(*n) || (label.starts_with("com.apple.") && *n == leaf))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in gone {
+            if let Some(j) = sect.remove(&k) {
+                removed.push(j.get("Label").and_then(Value::as_str).unwrap_or(&k).to_string());
+            }
+        }
+    }
+    removed.sort();
+    Ok((plist::to_binary(&pl), removed))
+}

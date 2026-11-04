@@ -318,3 +318,28 @@ pub unsafe extern "C" fn rr_prepare_ipa(ptr: *const u8, len: usize) -> i32 {
         }
     }
 }
+
+/// launchd.plist bytes + a comma-separated list of job names (Label, its last component, or the program's file name;
+/// empty = renegade::tweaks::UNPORTED_JOBS) -> the result buffer holds the new launchd.plist (binary) and the meta buffer
+/// the JSON {removed: [labels]}. On failure the result buffer holds the error text. No host import.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rr_remove_jobs(ptr: *const u8, len: usize, names_ptr: *const u8, names_len: usize) -> i32 {
+    // SAFETY: the host passes buffers it got from rr_alloc
+    let pl = unsafe { std::slice::from_raw_parts(ptr, len) };
+    // SAFETY: as above
+    let names_s = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(names_ptr, names_len) }).into_owned();
+    let given: Vec<&str> = names_s.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let names: Vec<&str> = if given.is_empty() { renegade::tweaks::UNPORTED_JOBS.to_vec() } else { given };
+    match renegade::tweaks::remove_jobs(pl, &names) {
+        Ok((out, removed)) => {
+            let list: Vec<String> = removed.iter().map(|l| json_str(l)).collect();
+            META.with(|m| *m.borrow_mut() = format!("{{\"removed\":[{}]}}", list.join(",")).into_bytes());
+            RESULT.with(|r| *r.borrow_mut() = out);
+            0
+        }
+        Err(e) => {
+            set_result(e.to_string());
+            1
+        }
+    }
+}

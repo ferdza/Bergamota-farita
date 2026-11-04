@@ -376,6 +376,44 @@ class SshSession {
     );
   }
 
+  /**
+   * "Disable unported services": the launchd jobs for hardware this port does not drive yet, or that crash-loop on it,
+   * come out of /System/Library/xpc/launchd.plist (edited in this page, the original kept once as
+   * /var/root/launchd.plist.orig). Next boot. "Re-enable" puts the original back. Enable a service again only once its
+   * driver is ported.
+   */
+  async disableUnported() {
+    if (!this.client) return;
+    const PL = "/System/Library/xpc/launchd.plist", ORIG = "/var/root/launchd.plist.orig";
+    this.output = null;
+    try {
+      this.busy = "Reading launchd.plist…";
+      const have = await this.run(`[ -s ${ORIG} ] && echo HAVE_ORIG`);
+      // always edit from Apple's original, so running this twice or after a change of list gives the same file
+      const src = await this.fetchBytes(`cat ${/HAVE_ORIG/.test(have.text) ? ORIG : PL}`);
+      const { plist, removed } = (await this.wasm()).removeJobs(src);
+      if (!removed.length) throw new SshError("none of the unported services is in this launchd.plist (already disabled?)");
+      if (!/HAVE_ORIG/.test(have.text)) {
+        const r = await this.run(`cp -p ${PL} ${ORIG} && [ "$(wc -c < ${PL})" = "$(wc -c < ${ORIG})" ] && echo SAVED`);
+        if (!/SAVED/.test(r.text)) throw new SshError(`could not keep ${ORIG}: ${r.text.trim()}`);
+      }
+      this.busy = "Writing launchd.plist…";
+      await this.upload(PL, plist, "644");
+      this.output = `launchd.plist: ${removed.length} services removed (original in ${ORIG}):\n  ${removed.join("\n  ")}\nTakes effect at the next boot. "Re-enable" restores them all.`;
+    } catch (e) {
+      this.error = explain(e as Error);
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  async enableUnported() {
+    await this.runStreamed(
+      "Re-enable services",
+      "O=/var/root/launchd.plist.orig; P=/System/Library/xpc/launchd.plist; [ -s $O ] || { echo 'nothing to restore (no launchd.plist.orig)'; exit 0; }; cp -p $O $P.part && mv -f $P.part $P && echo \"restored $P from $O (next boot)\"",
+    );
+  }
+
   /** A command whose output streams into the log box (GPU tests); Stop ends it, Download .txt keeps it. */
   async runStreamed(title: string, cmd: string) {
     if (!this.client) return;
