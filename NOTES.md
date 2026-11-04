@@ -225,6 +225,14 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     libchlorophyll + inject (backboardd, SpringBoard, …) into the root (web SSH upload or
     Renegade). Fajita unknowns: GPU SMMU state left by OnePlus ABL (the MDP was translating),
     OnePlus zap authentication by TZ.
+  - **MDP SMMU fix for zero-copy: patch 0254 (not booted).** The hypervisor refuses bypass
+    S2CRs (sweet_smmu.c header), so instead: sweet_smmu_adopt_sid() repoints the MDP stream-match
+    entries (0x880/0xc80, masks <= 0x8 only, no SMR added, ABL's other S2CR fields kept, read back)
+    to the shared identity bank already used by USB (works under the OnePlus hypervisor). Boot-arg
+    `sweetfb_smmuadopt=1` (default 0, implies sweetfb_smmu=2); zero-copy allowed only if the
+    streams moved; stats say smmu=identity. The probe/adopt result is re-logged every 30 s as
+    `SWEET SMMU: summary …` (the probe runs before any host listens; the root has no
+    dmesg/sysctl). Generated against CI 41769717548's build tree (git apply --check OK).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,

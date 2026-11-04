@@ -1,0 +1,265 @@
+From: Bergamota fajita port
+Subject: [PATCH] fajita: zero-copy through the SMMU identity bank (sweetfb_smmuadopt=1)
+
+On the OnePlus 6T the framebuffer always declined zero-copy scanout:
+"MDP SMMU streams not verified as bypass", smmu=translate-or-unknown. ABL
+leaves the MDP's streams (mdss iommus 0x880 / 0xc80, mask 8) translating
+through its own context bank, which maps the boot splash only, and the
+Qualcomm hypervisor refuses a bypass S2CR (sweet_smmu.c), so bypass is not an
+option. The shared identity bank sweet_smmu.c builds for the USB controller
+(IOVA == PA for all DRAM) already runs under the OnePlus hypervisor: USB
+networking works on fajita.
+
+- sweet_smmu_adopt_sid(sid): point the stream-match entries of sid at that
+  bank. Masked entries are accepted when the mask stays within the MDP's DT
+  mask 0x8; no SMR is added; ABL's other S2CR fields are kept; every write is
+  read back ("REFUSED" if the hypervisor dropped it). The splash the MDP is
+  scanning keeps its translation: the framebuffer programs physical addresses
+  and they work through ABL's bank, so ABL maps them 1:1.
+- SweetFramebuffer: boot-arg sweetfb_smmuadopt=1 (default 0) adopts both MDP
+  streams when zero-copy is requested and the probe did not see bypass; zero
+  copy is allowed only if both moved (or one has no entry and the other
+  moved). The stats line says smmu=identity then.
+- The probe runs when the framebuffer starts, before any host can read the
+  live log: what it saw (SMR/S2CR, CBAR, and at level 2 ABL's SCTLR/TTBR0/TCR/
+  MAIR0/FSR) plus the adoption result is kept and re-logged every 30 s as
+  "SWEET SMMU: summary ...". sweetfb_smmuadopt implies a level-2 probe.
+
+Generated against the build tree of CI run 41769717548 (0001-0253 applied).
+---
+diff --git a/bsd/dev/sweet_smmu.c b/bsd/dev/sweet_smmu.c
+index d7dc290..9d26188 100644
+--- a/bsd/dev/sweet_smmu.c
++++ b/bsd/dev/sweet_smmu.c
+@@ -26,6 +26,7 @@
+ #include <sys/param.h>
+ #include <sys/systm.h>
+ #include <sys/errno.h>
++#include <string.h>
+ #include <kern/clock.h>
+ #include <machine/machine_routines.h>
+ #include <arm/caches_internal.h>
+@@ -38,6 +39,26 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ int sweet_smmu_map_sid(unsigned sid);
+ int sweet_smmu_probe_sid(unsigned sid, unsigned level);
++int sweet_smmu_adopt_sid(unsigned sid);
++const char *sweet_smmu_summary(void);
++
++/*
++ * What the probe saw, kept for later: the probe runs when the framebuffer starts, long before a host can read
++ * the live log, so SweetFramebuffer re-logs this every 30 s ("SWEET SMMU: summary ...").
++ */
++static char smmu_summary[640];
++#define SMMU_NOTE(...) do { \
++	size_t _n = strlen(smmu_summary); \
++	if (_n < sizeof(smmu_summary) - 2) { \
++	        snprintf(smmu_summary + _n, sizeof(smmu_summary) - _n, __VA_ARGS__); \
++	} \
++} while (0)
++
++const char *
++sweet_smmu_summary(void)
++{
++	return smmu_summary[0] ? smmu_summary : "(no probe ran)";
++}
+ 
+ #define SMMU_PA         0x15000000u     /* apps_smmu */
+ #define SMMU_SIZE       0x100000u
+@@ -292,23 +313,115 @@ sweet_smmu_probe_sid(unsigned sid, unsigned level)
+ 		printf("SWEET SMMU: probe sid 0x%x: smr %u 0x%x (id 0x%x mask 0x%x) s2cr 0x%x type %s cb %u\n",
+ 		    sid, i, smr, smr & 0x7fff, mask, s2cr,
+ 		    type == 0 ? "TRANSLATE" : (type == 1 ? "BYPASS" : "FAULT"), cbndx);
++		SMMU_NOTE("[sid 0x%x smr %u id 0x%x mask 0x%x s2cr 0x%x %s cb %u", sid, i, smr & 0x7fff, mask, s2cr,
++		    type == 0 ? "T" : (type == 1 ? "B" : "F"), cbndx);
+ 		if (type == 0 && level >= 1 && cbndx < ncb) {
+-			printf("SWEET SMMU: probe cb %u: CBAR 0x%x CBA2R 0x%x\n", cbndx,
+-			    smmu_rd(gr1 + 4 * cbndx), smmu_rd(gr1 + 0x800 + 4 * cbndx));
++			uint32_t cbar = smmu_rd(gr1 + 4 * cbndx), cba2r = smmu_rd(gr1 + 0x800 + 4 * cbndx);
++			printf("SWEET SMMU: probe cb %u: CBAR 0x%x CBA2R 0x%x\n", cbndx, cbar, cba2r);
++			SMMU_NOTE(" cbar 0x%x cba2r 0x%x", cbar, cba2r);
+ 			if (level >= 2) {
+ 				uint32_t cb = cb0 + (cbndx << pgshift);
+ 				uint64_t ttbr0 = smmu_rd(cb + 0x20) | (uint64_t)smmu_rd(cb + 0x24) << 32;
+ 				printf("SWEET SMMU: probe cb %u: SCTLR 0x%x TTBR0 0x%llx TCR 0x%x TCR2 0x%x MAIR0 0x%x FSR 0x%x\n",
+ 				    cbndx, smmu_rd(cb + 0x0), ttbr0, smmu_rd(cb + 0x30), smmu_rd(cb + 0x10),
+ 				    smmu_rd(cb + 0x38), smmu_rd(cb + 0x58));
++				SMMU_NOTE(" sctlr 0x%x ttbr0 0x%llx tcr 0x%x tcr2 0x%x mair0 0x%x fsr 0x%x", smmu_rd(cb + 0x0), ttbr0,
++				    smmu_rd(cb + 0x30), smmu_rd(cb + 0x10), smmu_rd(cb + 0x38), smmu_rd(cb + 0x58));
+ 			}
+ 		}
++		SMMU_NOTE("] ");
+ 	}
+ 	if (nmatch == 0) {
+ 		printf("SWEET SMMU: probe sid 0x%x: no SMR matches\n", sid);
++		SMMU_NOTE("[sid 0x%x no SMR: default s2cr] ", sid);
++	}
++	if (sid == 0x880 || nmatch == 0) {
++		SMMU_NOTE("sCR0 0x%x ncb %u nsmr %u ", scr0, ncb, nsmr);
+ 	}
+ out:
+ 	__atomic_store_n(&smmu_lock, 0, __ATOMIC_RELEASE);
+ 	return result;
+ }
++
++/*
++ * OnePlus 6T (fajita): ABL leaves the MDP's streams (sdm845.dtsi mdss iommus 0x880 / 0xc80, mask 8)
++ * TRANSLATING through ABL's own context bank, which maps the boot splash only, and the Qualcomm hypervisor
++ * refuses a bypass S2CR (top of this file). Point the stream-match entries of `sid` at the shared identity bank
++ * instead: IOVA == PA for all of DRAM, so the splash the MDP is scanning right now keeps the same translation
++ * (the framebuffer programs physical addresses, and they work through ABL's bank, i.e. ABL maps them 1:1),
++ * and the low pool of zero-copy scanout becomes reachable. The USB controller already runs through this bank
++ * on fajita, so the bank works under the OnePlus hypervisor.
++ *
++ * Unlike sweet_smmu_map_sid(): a masked entry is accepted when its mask stays within the MDP's own DT mask
++ * (0x8, i.e. 0x880/0x888 or 0xc80/0xc88, all MDP streams), no SMR is ever added (an unmatched stream keeps
++ * the default S2CR), and the S2CR's other fields (PRIVCFG, INSTCFG, ...) set up by ABL are kept.
++ * Returns 0 when every matching entry now translates through the identity bank; ENOENT no entry matches;
++ * EEXIST an entry's mask is wider than 0x8 (left alone); EIO the hypervisor refused the write (read back).
++ */
++int
++sweet_smmu_adopt_sid(unsigned sid)
++{
++	int error = ENOENT;
++	unsigned n = 0, ok = 0;
++
++	if (__atomic_exchange_n(&smmu_lock, 1, __ATOMIC_ACQUIRE)) {
++		return EBUSY;
++	}
++	if (smmu_base == 0) {
++		smmu_base = ml_io_map(SMMU_PA, SMMU_SIZE);
++		if (smmu_base == 0) {
++			printf("SWEET SMMU: adopt: map failed\n");
++			error = EIO;
++			goto out;
++		}
++	}
++	if (smmu_cb < 0) {
++		error = smmu_bank_create();
++		if (error) {
++			goto out;
++		}
++	}
++	uint32_t id0 = smmu_rd(0x20);
++	unsigned nsmr = id0 & 0xff;
++	for (unsigned i = 0; i < nsmr && i < 128; i++) {
++		uint32_t smr = smmu_rd(0x800 + 4 * i);
++		if (!(smr & (1u << 31))) {
++			continue;
++		}
++		uint32_t mask = (smr >> 16) & 0x7fff;
++		if (((smr ^ sid) & ~mask & 0x7fff) != 0) {
++			continue;
++		}
++		if (mask & ~0x8u) {
++			printf("SWEET SMMU: adopt sid 0x%x: smr %u mask 0x%x covers more than the MDP; left alone\n", sid, i, mask);
++			SMMU_NOTE("adopt 0x%x smr %u mask 0x%x TOO WIDE ", sid, i, mask);
++			error = EEXIST;
++			goto out;
++		}
++		uint32_t s2cr = smmu_rd(0xc00 + 4 * i);
++		n++;
++		if (((s2cr >> 16) & 3) == 0 && (s2cr & 0xff) == (uint32_t)smmu_cb) {
++			ok++;   /* already ours */
++			continue;
++		}
++		uint32_t want = (s2cr & ~((3u << 16) | 0xffu)) | (uint32_t)smmu_cb;   /* type 0 = translate */
++		smmu_wr(0xc00 + 4 * i, want);
++		uint32_t back = smmu_rd(0xc00 + 4 * i);
++		int good = ((back >> 16) & 3) == 0 && (back & 0xff) == (uint32_t)smmu_cb;
++		printf("SWEET SMMU: adopt sid 0x%x smr %u (id 0x%x mask 0x%x) s2cr 0x%x -> 0x%x read back 0x%x (%s)\n",
++		    sid, i, smr & 0x7fff, mask, s2cr, want, back, good ? "identity bank" : "REFUSED");
++		SMMU_NOTE("adopt 0x%x smr %u 0x%x->0x%x %s ", sid, i, s2cr, back, good ? "OK" : "REFUSED");
++		ok += good ? 1u : 0u;
++	}
++	if (n == 0) {
++		printf("SWEET SMMU: adopt sid 0x%x: no stream-match entry\n", sid);
++		SMMU_NOTE("adopt 0x%x none ", sid);
++		error = ENOENT;
++	} else {
++		error = ok == n ? 0 : EIO;
++	}
++out:
++	__atomic_store_n(&smmu_lock, 0, __ATOMIC_RELEASE);
++	return error;
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 1a16f3f..4c250ca 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -47,6 +47,8 @@ extern "C" void sweet_busy_init(void);          /* iokit/Kernel/arm/SweetBusy.cp
+ #include "../../../bsd/dev/sweet_board.h"
+ #include "../../../bsd/dev/sweet_spmi.h"
+ extern "C" int sweet_smmu_probe_sid(unsigned sid, unsigned level); /* bsd/dev/sweet_smmu.c, read only */
++extern "C" int sweet_smmu_adopt_sid(unsigned sid);            /* bsd/dev/sweet_smmu.c: stream -> identity bank */
++extern "C" const char *sweet_smmu_summary(void);              /* what the probe/adopt saw, re-logged every 30 s */
+ extern "C" void sweet_fb_stats_publish(const char *text);       /* bsd/dev/sweet_fb.c: sysctl kern.sweet_fb */
+ extern "C" int sweet_fb_hud;
+ extern "C" uint32_t sweet_gpu_fence_snapshot(void);     /* bsd/dev/sweet_a630.c (0229) */
+@@ -692,9 +694,20 @@ AppleCLCD::start(IOService *provider)
+ 			PE_parse_boot_argn("sweetfb_zcclean", &cm, sizeof(cm));
+ 			fZcCleanMode = cm > 3 ? 3 : cm;
+ 		}
++		/*
++		 * sweetfb_smmuadopt=1 (0254, OnePlus 6T): ABL leaves the MDP streams translating through its own bank
++		 * (splash only) and the hypervisor refuses bypass, so zero-copy was always declined. Point them at the
++		 * shared identity bank instead (sweet_smmu_adopt_sid). Off by default; implies a level-2 probe so the
++		 * re-logged summary carries ABL's bank registers.
++		 */
++		int smmuAdopt = 0;
++		PE_parse_boot_argn("sweetfb_smmuadopt", &smmuAdopt, sizeof(smmuAdopt));
+ 		if (zcReq && smmuLevel == 0) {
+ 			smmuLevel = 1;
+ 		}
++		if (smmuAdopt && smmuLevel < 2) {
++			smmuLevel = 2;
++		}
+ 		if (smmuLevel > 0) {
+ 			/* read only: the MDP's streams (sdm845.dtsi mdss iommus 0x880 / 0xc80, mask 8) */
+ 			int a = sweet_smmu_probe_sid(0x880, (unsigned)smmuLevel);
+@@ -703,6 +716,19 @@ AppleCLCD::start(IOService *provider)
+ 			fSmmuA = a;
+ 			fSmmuB = b;
+ 			IOLog("SWEET FB: MDP SMMU streams 0x880 -> %d, 0xc80 -> %d (1 bypass, 2 translate, 3 fault, 4 mixed, 0 none, -1 unreadable)\n", a, b);
++			if (smmuAdopt && zcReq && !fZcOK && fHw && fFlip) {
++				int ea = sweet_smmu_adopt_sid(0x880);
++				int eb = sweet_smmu_adopt_sid(0xc80);
++				/* a stream with no stream-match entry is not one the MDP uses (it would fault): fine if the other moved */
++				bool okA = ea == 0 || (ea == ENOENT && a == 0), okB = eb == 0 || (eb == ENOENT && b == 0);
++				IOLog("SWEET FB: sweetfb_smmuadopt=1: MDP streams -> identity bank: 0x880 %d, 0xc80 %d "
++				    "(0 moved, 2 no entry, 5 refused by the hypervisor, 17 mask too wide) -> %s\n", ea, eb,
++				    okA && okB && (ea == 0 || eb == 0) ? "zero-copy allowed" : "zero-copy stays declined");
++				if (okA && okB && (ea == 0 || eb == 0)) {
++					fZcOK = true;
++					fSmmuA = fSmmuB = 5;    /* 5: adopted into the identity bank */
++				}
++			}
+ 		}
+ 		if (zcReq) {
+ 			if (!fHw || !fFlip) {
+@@ -1156,7 +1182,8 @@ AppleCLCD::statsTick(uint64_t now)
+ 	uint64_t swAvg = dSwW ? sweet_abs_us(c.swapWaitAbs - p.swapWaitAbs) * 100 / dSwW : 0;
+ 	uint64_t lwAvg = dLw ? sweet_abs_us(c.latchWaitAbs - p.latchWaitAbs) * 100 / dLw : 0;
+ 	const char *mode = fZc && fZcOK ? (fDirect ? "direct" : "zc") : "copy";
+-	const char *smmu = fSmmuA == -2 ? "untested" : ((fSmmuA == 1 && fSmmuB == 1) ? "bypass" : "translate-or-unknown");
++	const char *smmu = fSmmuA == -2 ? "untested" : ((fSmmuA == 1 && fSmmuB == 1) ? "bypass" :
++	    (fSmmuA == 5 ? "identity" : "translate-or-unknown"));
+ 	uint32_t used = 0, total = 0;
+ 	uint64_t pallocs = 0, pfails = 0;
+ 	sweet_lowpool_stats(&used, &total, &pallocs, &pfails);
+@@ -1191,6 +1218,14 @@ AppleCLCD::statsTick(uint64_t now)
+ 		fStLogT = now;
+ 		IOLog("SWEET FB: stats %s", line);
+ 	}
++	{
++		/* the probe ran at framebuffer start, before any host listened: repeat what it saw (0254) */
++		static uint64_t sSmmuT;
++		if (fSmmuA != -2 && (sSmmuT == 0 || sweet_abs_us(now - sSmmuT) >= 30000000ull)) {
++			sSmmuT = now;
++			IOLog("SWEET SMMU: summary %s\n", sweet_smmu_summary());
++		}
++	}
+ 	fStPrev = fSt;
+ 	fStPrev.swaps = swaps;
+ 	fStPrev.coalesced = coalesced;
