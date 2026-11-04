@@ -246,6 +246,15 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     (bgl-launch for backboardd, inert w/o boot-arg); the WASM Renegade has bglrender but NOT bgmtl /
     first-boot -> install Chlorophyll over web SSH (needs an upload button) for the first tests.
     Side find: berga-tools ships sweetlog (unified log reader) -> kernel lines once logd runs.
+  - **Kernel CI 41776842906 SUCCESS (0254 applied)** -> xnu/out-fajita5. Image
+    research/ios18/enxerto-boot-ios18-fajita-zc2.img = 0254 kernel + `-v sweetfb_zc=1
+    sweetfb_smmuadopt=1` (sent, not booted).
+  - **GPU step 1 image** research/ios18/enxerto-boot-ios18-fajita-gpu5.img = touch3 kernel + ADT
+    with /sweet-gpu firmware (tools/split-mbn.py + mkadt --gpu-fw; zap from pmOS
+    OnePlus/enchilada, sqe/gmu from linux-firmware 0cb5a7f) + `-v sweetgpu=5` (no TZ zap, no
+    CP submission). Contains OEM firmware: never commit or publish. Sent, not booted.
+  - **Web SSH tools (808e541):** upload (atomic, size-checked), "Install tools" (sweetlog etc. from
+    the site's berga-tools.zip, unzipped in the page), kernel log via `sweetlog 86400 kernel`.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
