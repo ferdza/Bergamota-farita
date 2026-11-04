@@ -156,6 +156,12 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     SSH key, bluetoothd crash loop x12 (reason=1201, BT not ported), clock 1970 (0245 RTC
     offset needs one network/`date` set), charger state=INHIBIT + no SOC line in this
     window (6T has OnePlus Dash charging; battery capacity constant is beryllium's).
+  - **touch2 on device (log 02-17-16):** `ldoa28 vote -> 0`, S3706 ACKs (err=0), PDT finds
+    F01 (q=0x2b d=0x6) and F12 (q=0x4a c=0x13 d=0x8), but `raw max x=0 y=0 irq=0`, product
+    id "". Cause: F12 IRQ hard-coded as bit 2 (RMI4 numbers sources in PDT order), product
+    id read at query+0x10 (Linux: +11). Fixed in 0252 (ae270bc): PDT-derived masks, enable
+    all sources, 50 ms polling fallback, 16-bit coords, raw F12 bytes logged every 3 s.
+    Kernel CI 41769717548 running.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
