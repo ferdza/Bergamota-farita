@@ -79,6 +79,19 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     frames), **EXPERIMENTAL — needs on-device confirmation** (iOS ECM framing,
     192.168.7.1/.2). UI livelog/ with search + SWEET/CRASH filters, pause/follow,
     lines/s, save .txt. Host MAC 02:be:47:0a:01:01, host IP 192.168.7.1.
+  - **FIRST HARDWARE BOOT (2026-11-04, user, observed):** standalone Enxerto
+    (`BOARD=fajita`, empty ramdisk, 532480 B) test-booted from the site on the real
+    OnePlus 6T; the phone came back on USB as **Bergamota fastboot, unlocked** —
+    Enxerto runs, fajita DTB accepted, DWC3 USB works. Screen output not yet
+    reported. Bug found: it answered `getvar product` = "beryllium" (fastboot.c
+    FB_PRODUCT default). Fixed: build.sh fajita passes -DFB_PRODUCT="fajita";
+    site SUPPORTED_PRODUCTS gains "fajita". Site boot-image floor lowered to 64 KiB
+    (c68c9eb) so a bootloader-only Enxerto can be test-booted.
+  - **Next for iOS:** full fajita boot image = Enxerto + Heartwood kernel (CI run
+    41704470401, kernel.development.sweet in xnu/out-fajita, gitignored) + ADT
+    `mkadt.py --board fajita --highmem --display-scale 3 --identity d22ap`. Blocked on
+    the D22AP device-tree seed research/ipsw-x/d22ap.adt (Apple artifact, out of git;
+    without it the ADT has no /product). mkboot-full.sh hard-codes BOARD=beryllium.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,

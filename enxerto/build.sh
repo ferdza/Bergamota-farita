@@ -29,7 +29,8 @@ CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align
 case $BOARD in
 sweet)		DTB=${DTB:-../dtb/boot_unpacked/dtb}; BOARDDEF= ;;
 beryllium)	DTB=${DTB:-../dtb/beryllium/dtb}; BOARDDEF=-DBOARD_BERYLLIUM ;;
-fajita)		DTB=${DTB:-../dtb/fajita/dtb}; BOARDDEF=-DBOARD_FAJITA ;;
+# fajita: Bergamota fastboot must answer `getvar product` with its own name, not fastboot.c's beryllium default
+fajita)		DTB=${DTB:-../dtb/fajita/dtb}; BOARDDEF='-DBOARD_FAJITA -DFB_PRODUCT="fajita"' ;;
 *)		echo "error: unknown BOARD=$BOARD" >&2; exit 1 ;;
 esac
 CFLAGS="$CFLAGS $BOARDDEF"

@@ -70,6 +70,8 @@ export const SUPPORTED_PRODUCTS: Record<string, string> = {
   // OnePlus's ABL reports the SoC, not the codename: `fastboot getvar product` -> "sdm845"
   // on the OnePlus 6T (fajita). Confirmed on-device 2026-11-03.
   sdm845: "OnePlus 6T",
+  // Enxerto's own Bergamota fastboot on the OnePlus 6T reports the board name (build.sh FB_PRODUCT).
+  fajita: "OnePlus 6T",
 };
 
 /** Friendly phone name for the UI, or the raw product string. */
