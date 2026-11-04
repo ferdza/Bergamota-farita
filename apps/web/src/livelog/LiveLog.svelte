@@ -2,6 +2,8 @@
   import { log, TAGS } from "./logsession.svelte.ts";
   import { UsbNet } from "../lib/usbnet.ts";
   import { HOST_IP, PHONE_IP, LOG_PORT } from "../lib/ethernet.ts";
+  import { sshs } from "./sshsession.svelte.ts";
+  import Terminal from "./Terminal.svelte";
 
   const base = import.meta.env.BASE_URL;
   const supported = log.supported;
@@ -86,6 +88,38 @@
       <p class="muted raw">Browser said: <code>{log.rawError}</code></p>
     {/if}
 
+    {#if log.state === "live"}
+      <section class="sheet ssh" aria-labelledby="ssh-title">
+        <div class="ssh-head">
+          <h2 id="ssh-title">SSH</h2>
+          <span class="tag" class:on={sshs.state === "ready"}>{sshs.state === "ready" ? "connected" : sshs.state === "connecting" ? "connecting…" : "not connected"}</span>
+        </div>
+        {#if sshs.state !== "ready"}
+          {#if sshs.rebooting}<p class="ok">The phone is rebooting ({sshs.rebooting}). Reconnect it when it is back.</p>{/if}
+          <label class="key">
+            <span>Your SSH <b>private</b> key (<code>~/.ssh/id_ed25519</code>). It stays in this tab: never stored, never sent anywhere.</span>
+            <textarea bind:value={sshs.keyText} oninput={() => sshs.checkKey()} rows="4" spellcheck="false" autocomplete="off" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+          </label>
+          {#if sshs.keyError}<p class="problem">{sshs.keyError}</p>{/if}
+          {#if sshs.pub}<p class="muted">Its public half, which must be the one you gave when patching: <code class="pub">{sshs.pub}</code></p>{/if}
+          <div class="row"><button class="btn leaf" disabled={sshs.state === "connecting" || !sshs.keyText.trim()} onclick={() => sshs.connect()}>{sshs.state === "connecting" ? "Connecting…" : "Connect SSH"}</button></div>
+          {#if sshs.error}<p class="problem" role="alert">{sshs.error}</p>{/if}
+        {:else}
+          <p class="muted">root@{PHONE_IP} · {sshs.server} · host key <code>{sshs.fingerprint}</code></p>
+          <div class="row acts2">
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()}>Full kernel log (dmesg)</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("fastboot")}>Reboot to fastboot</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("normal")}>Reboot</button>
+            <button class="btn ghost" onclick={() => sshs.disconnect()}>Disconnect</button>
+          </div>
+          {#if sshs.busy}<p class="muted">{sshs.busy}</p>{/if}
+          {#if sshs.error}<p class="problem">{sshs.error}</p>{/if}
+          <p class="muted">Leave iOS with these buttons, not a hard reset: they flush the disk first.</p>
+          <Terminal />
+        {/if}
+      </section>
+    {/if}
+
     <section class="controls">
       <input class="search" placeholder="Filter text…" bind:value={log.search} autocomplete="off" spellcheck="false" aria-label="Filter log text" />
       <div class="tags" role="group" aria-label="Tags">
@@ -155,6 +189,16 @@
   .osnet h2 { font-size: 22px; margin: 0 0 10px; }
   .osnet .muted, .raw { color: var(--ink-soft); font-size: 13px; }
   .osnet .row { margin-top: 12px; }
+  .ssh { display: grid; gap: 12px; }
+  .ssh-head { display: flex; align-items: center; gap: 12px; }
+  .ssh-head h2 { margin: 0; font-size: 24px; }
+  .tag { font: 600 12px var(--mono); padding: 4px 10px; border-radius: 999px; background: var(--paper-line); }
+  .tag.on { background: var(--leaf); color: var(--white); }
+  .key { display: grid; gap: 6px; font-size: 14px; }
+  .key textarea { font: 500 12.5px var(--mono); padding: 10px 12px; border: 2px solid var(--ink); border-radius: 6px; background: var(--white); resize: vertical; }
+  .pub { word-break: break-all; font-size: 11.5px; }
+  .acts2 { display: flex; gap: 10px; flex-wrap: wrap; }
+  .ok { color: var(--leaf); font-weight: 700; margin: 0; }
   .note { font-size: 13px; color: var(--ink-soft); margin: 0; }
   .problem { background: #fdecea; color: #6b1d0c; padding: 12px 16px; border-radius: 6px; margin: 0; }
 

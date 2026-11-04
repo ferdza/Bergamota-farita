@@ -4,6 +4,7 @@
 
 import { UsbNet, UsbNetError } from "../lib/usbnet.ts";
 import { classifyTags, LineAssembler, NetLogEngine, LOG_TAGS, type LogTag, tagBit } from "../lib/netlog.ts";
+import { IpStack } from "../lib/ipstack.ts";
 
 export interface Line {
   id: number;
@@ -36,6 +37,8 @@ class LogSession {
 
   private net: UsbNet | null = null;
   private engine = new NetLogEngine();
+  /** TCP/IP over the same link, for SSH (sshsession.svelte.ts). Recreated on every connect. */
+  stack: IpStack | null = null;
   private assembler = new LineAssembler();
   private pending: Line[] = [];
   private nextId = 0;
@@ -55,6 +58,8 @@ class LogSession {
     try {
       const net = dev ? await UsbNet.open(dev) : await UsbNet.request();
       this.net = net;
+      this.engine = new NetLogEngine();
+      this.stack = new IpStack((f) => void net.send(f).catch(() => {}));
       this.deviceName = net.usb.productName ?? "USB networking device";
       this.state = "live";
       this.startFlush();
@@ -86,6 +91,7 @@ class LogSession {
     try {
       for await (const frame of net.frames()) {
         const { reply, logBytes } = this.engine.handle(frame);
+        this.stack?.onFrame(frame);
         if (reply) await net.send(reply).catch(() => {});
         if (logBytes) {
           for (const text of this.assembler.push(logBytes)) {
@@ -147,6 +153,16 @@ class LogSession {
     return out.reverse();
   }
 
+  /** Puts earlier history (the kernel buffer fetched over SSH) before what the page received live. */
+  prependHistory(text: string, title: string) {
+    const lines = text.split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.length);
+    const head: Line[] = [{ id: this.nextId++, text: `# ---- ${title} (${lines.length} lines) ----`, tags: 0 }];
+    for (const t of lines) head.push({ id: this.nextId++, text: t, tags: classifyTags(t) });
+    head.push({ id: this.nextId++, text: "# ---- live log ----", tags: 0 });
+    this.lines = head.concat(this.lines);
+    this.total += lines.length;
+  }
+
   clear() {
     this.lines = [];
     this.pending.length = 0;
@@ -167,6 +183,7 @@ class LogSession {
   async disconnect() {
     const net = this.net;
     this.net = null;
+    this.stack = null;
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
