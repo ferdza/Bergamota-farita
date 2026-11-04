@@ -313,6 +313,13 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
       header slack of iOS 18 backboardd is unchecked (falls back to bgi.dylib).
     * Images (out-fajita6, gitignored, OEM zap inside): research/ios18/enxerto-boot-ios18-fajita-gpu{5,7,8}-v3.img
       and gpu8-v3-safe.img (+ sweetdenypath=/usr/local/lib/bgmtl/bgmtl-inject.dylib). v2 images deleted.
+  - **Bergamota USB link, 2026-11-04 (user moved to an Android tablet: its OS takes the CDC-ECM interface, no root
+    to unbind it):** xnu-11215 **0256** `sweetusbraw=1`: the gadget offers ONE vendor interface (1209:0002, class
+    0xff / subclass 0x42 / protocol 1, bulk 0x81 + 0x01, string 5 "Bergamota link (raw Ethernet, WebUSB)") carrying
+    the same Ethernet frames as the ECM data pipe (one bulk transfer = one frame); link up at SET_CONFIGURATION, no
+    notifications, SET_INTERFACE only (0,0). Generated against the build tree of CI 41814562336. Web: usbnet.ts
+    accepts it (filters, isRaw, `net.raw`), tests test/usbnet.test.ts (fake WebUSB devices). In that mode the
+    computer's own ssh/ping to 192.168.7.2 does not exist; the page's SSH does. Images with it: `*-link.img`.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
