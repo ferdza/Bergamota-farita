@@ -387,6 +387,10 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
       ad-hoc resign inside-out keeping entitlements, CodeResources per bundle, ustar 0:80), WASM rr_prepare_ipa,
       SSH panel "Install an app (.ipa)" (tar -x into /Applications, sweetuicache, installs sweetuicache from the
       tools bundle if missing) + "Remove an app". Tests: tests/ipa.rs (GNU tar extracts it), web wasm test.
+  - **Kernel CI 41882856594 SUCCESS (505804b: 0258 with vsyncKick + 0259) -> xnu/out-fajita9.** Daily image (gitignored,
+    OEM zap inside): research/ios18/enxerto-boot-ios18-fajita-daily.img = out-fajita9 + fajita-gpu.adt + base CMDLINE +
+    tools/renegade/fajita-daily-args.txt. Sent to the user, NOT booted yet. If it misbehaves: gpu8-direct-scancopy2-link2
+    is the last image the user confirmed (no flicker, 30 Hz, GPU at fixed 257 MHz, no 0258/0259).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
