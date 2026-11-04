@@ -1,0 +1,181 @@
+diff --git a/bsd/dev/sweet_fb.c b/bsd/dev/sweet_fb.c
+index fea5174..40fdd79 100644
+--- a/bsd/dev/sweet_fb.c
++++ b/bsd/dev/sweet_fb.c
+@@ -60,6 +60,15 @@ static int sweet_fb_sysctl SYSCTL_HANDLER_ARGS
+  * the initial value. The framebuffer only reads it (a relaxed load per frame / vsync tick).
+  */
+ int sweet_fb_hud;
++
++/*
++ * 0258: 1 while iOS has the display off (IOMFB RequestPowerChange 0), set by SweetFramebuffer.cpp. Pollers and the CPU
++ * governor slow down on it (sweet_touch.c, sweet_usb.c, sweet_cpufreq.c); kern.sweet_display_off shows it.
++ */
++int sweet_display_off;
++SYSCTL_INT(_kern, OID_AUTO, sweet_display_off, CTLFLAG_RD | CTLFLAG_LOCKED, &sweet_display_off, 0,
++    "1 while the display is off (pollers and the CPU governor slow down)");
++
+ SYSCTL_INT(_kern, OID_AUTO, sweet_fb_hud, CTLFLAG_RW | CTLFLAG_LOCKED, &sweet_fb_hud, 0,
+     "Poco F1 on-screen performance HUD (0 off, 1 on); needs the copy scan-out path");
+ 
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index de505f3..8601147 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -170,6 +170,8 @@ touch_wr(vm_offset_t base, uint32_t off, uint32_t val)
+ 	__asm__ volatile("dsb osh" ::: "memory");
+ }
+ 
++extern int sweet_display_off;           /* sweet_fb.c (0258) */
++
+ static void
+ touch_wait(unsigned ms)
+ {
+@@ -1326,7 +1328,11 @@ touch_fajita_thread(void *arg, wait_result_t result)
+ 			    fj_raw[0], fj_raw[1], fj_raw[2], fj_raw[3], fj_raw[4], fj_raw[5], fj_raw[6], fj_raw[7],
+ 			    fj_raw[8], fj_raw[9], fj_raw[10], fj_raw[11], fj_raw[12], fj_raw[13], fj_raw[14], fj_raw[15]);
+ 		}
+-		touch_wait(10);
++		/*
++		 * 0258: with the display off nobody reads the panel (iOS wakes on the power button), so one look every 500 ms
++		 * instead of 100 I2C reads a second; the first poll after it comes back on is at most 500 ms late.
++		 */
++		touch_wait(__atomic_load_n(&sweet_display_off, __ATOMIC_ACQUIRE) ? 500 : 10);
+ 	}
+ 	touch_report(0, st.x, st.y);
+ out:
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 01c20dd..40b96ec 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -658,6 +658,7 @@ ud_if_output(ifnet_t ifp, mbuf_t m)
+ 	ifnet_stat_increment_out(ifp, 1, mbuf_pkthdr_len(m), 0);
+ 	ud.txq[(ud.txq_head + ud.txq_count) % UD_TXQ] = m;
+ 	ud.txq_count++;
++	thread_wakeup(&ud.sleep_chan);  /* 0258: the poller may be in a long sleep; the completion comes soon */
+ 	ud_tx_kick_locked();
+ 	lck_mtx_unlock(ud.lock);
+ 	return 0;
+@@ -1025,12 +1026,34 @@ ud_event(uint32_t ev)
+ 	}
+ }
+ 
++extern int sweet_display_off;           /* sweet_fb.c (0258) */
++
++/*
++ * 0258: the controller's interrupt is masked (polled), and a 1 ms poll forever woke a CPU 1000 times a second with the
++ * phone asleep in a pocket. Now 1 ms while events come (and for 50 ms after the last one, so a burst never waits), then
++ * 4 ms; with the display off and the link idle 20 ms, and 100 ms when no host has configured us (no cable). A transmit
++ * wakes the thread at once (ud_if_output), so only the first received frame after a quiet spell can be late, by at
++ * most the current interval.
++ */
++static uint32_t
++ud_poll_ms(uint32_t quiet)
++{
++	if (quiet < 50) {
++		return 1;
++	}
++	if (!ud.configured) {
++		return 100;
++	}
++	return __atomic_load_n(&sweet_display_off, __ATOMIC_ACQUIRE) ? 20 : 4;
++}
++
+ static void
+ ud_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+-	uint32_t ticks = 0;
++	uint32_t ticks = 0, quiet = 0;
+ 	for (;;) {
+ 		uint32_t count = dwc_rd(GEVNTCOUNT) & 0xffff;
++		quiet = count ? 0 : (quiet < 1000000 ? quiet + 1 : quiet);
+ 		if (count) {
+ 			ud_sync(UD_EVT, UD_EVT_SIZE);
+ 			for (uint32_t done = 0; done < count; done += 4) {
+@@ -1045,7 +1068,7 @@ ud_thread(void *arg __unused, wait_result_t wr __unused)
+ 			}
+ 			dwc_wr(GEVNTCOUNT, count);
+ 		}
+-		if ((++ticks % 30000) == 0) {
++		if ((++ticks % 30000) == 0 && quiet < 50) {
+ 			volatile uint32_t *rx = (volatile uint32_t *)(ud.dma + UD_TRB_RX);
+ 			volatile uint32_t *tx = (volatile uint32_t *)(ud.dma + UD_TRB_TX);
+ 			ud_sync(UD_TRB_RX, 0x20);
+@@ -1054,7 +1077,7 @@ ud_thread(void *arg __unused, wait_result_t wr __unused)
+ 			    ud.rx_frames, ud.tx_frames, ud.configured, ud.data_alt, ud.tx_busy, ud.txq_count,
+ 			    rx[2], rx[3], ud.xfer_active[EP_RX], tx[2], tx[3], ud.xfer_active[EP_TX], dwc_rd(DSTS));
+ 		}
+-		ud_sleep_ms(1);
++		ud_sleep_ms(ud_poll_ms(quiet));
+ 	}
+ }
+ 
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+index 2460e6d..68cf74a 100644
+--- a/bsd/dev/sweet_cpufreq.c
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -165,6 +165,13 @@ static struct cf_domain {
+ 
+ static bool cf_started;
+ static int cf_mode = MODE_OFF;
++/*
++ * 0258: sweetcpufreq_offcap=1 (default): with the display off for 5 s, both clusters are held at their lowest state
++ * (background work runs, slowly; a frequency step costs nothing to undo). 0 = the governor as with the display on.
++ */
++static int cf_offcap = 1;
++static uint64_t cf_off_since;
++extern int sweet_display_off;           /* sweet_fb.c */
+ static unsigned cf_ncpus;
+ static unsigned cf_log_secs = 10;
+ static int cf_force;
+@@ -388,6 +395,22 @@ cf_gov_step(unsigned id, struct cf_domain *d, uint64_t wall)
+ 	if (in_act && d->in_idx > ceil_i) {
+ 		ceil_i = d->in_idx;
+ 	}
++	if (cf_offcap && __atomic_load_n(&sweet_display_off, __ATOMIC_ACQUIRE)) {
++		uint64_t now = mach_absolute_time(), five;
++		nanoseconds_to_absolutetime(5 * NSEC_PER_SEC, &five);
++		if (cf_off_since == 0) {
++			cf_off_since = now;
++		}
++		if (now - cf_off_since >= five && !in_act) {
++			if (cur != 0) {
++				cf_request(d, 0);       /* 0258: display off, lowest state */
++			}
++			d->down_cnt = 0;
++			return;
++		}
++	} else if (id == 1) {
++		cf_off_since = 0;               /* the A75 step runs after the A55 one: both saw the same state */
++	}
+ 	if (d->in_on && !in_act && cur > ceil_i) {
+ 		cf_request(d, ceil_i);
+ 		cur = ceil_i;
+@@ -669,6 +692,7 @@ sweet_cpufreq_max(void)
+ 	cf_log_secs = v < 0 ? 0 : (unsigned)v;
+ 	(void)PE_parse_boot_argn("sweetcpufreq_force", &cf_force, sizeof(cf_force));
+ 	(void)PE_parse_boot_argn("sweetcpufreq_little_boost", &cf_boost, sizeof(cf_boost));
++	(void)PE_parse_boot_argn("sweetcpufreq_offcap", &cf_offcap, sizeof(cf_offcap));
+ 	cf_boost_pct = cf_percent_arg("sweetcpufreq_little_boost_max", 100);
+ start:
+ 	if (kernel_thread_start((thread_continue_t)cf_thread, NULL, &thread) == KERN_SUCCESS) {
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 4c250ca..a19896c 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -51,6 +51,7 @@ extern "C" int sweet_smmu_adopt_sid(unsigned sid);            /* bsd/dev/sweet_s
+ extern "C" const char *sweet_smmu_summary(void);              /* what the probe/adopt saw, re-logged every 30 s */
+ extern "C" void sweet_fb_stats_publish(const char *text);       /* bsd/dev/sweet_fb.c: sysctl kern.sweet_fb */
+ extern "C" int sweet_fb_hud;
++extern "C" int sweet_display_off;       /* bsd/dev/sweet_fb.c (0258) */
+ extern "C" uint32_t sweet_gpu_fence_snapshot(void);     /* bsd/dev/sweet_a630.c (0229) */
+ extern "C" bool sweet_gpu_blit_window(uint64_t pa, uint64_t size);      /* bsd/dev/sweet_a630.c (0240) */
+ extern "C" uint32_t sweet_gpu_blit(uint64_t src_pa, uint32_t src_pitch, uint64_t dst_pa, uint32_t dst_pitch, uint32_t w, uint32_t h);
+@@ -3627,6 +3628,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 				fFB->fDirty = true;     /* on: redraw the latest frame */
+ 			}
+ 			IOLockUnlock(fFB->fLock);
++			__atomic_store_n(&sweet_display_off, off ? 1 : 0, __ATOMIC_RELEASE);   /* 0258 */
+ 			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
+ 		}
+ 		break;
