@@ -255,6 +255,15 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     CP submission). Contains OEM firmware: never commit or publish. Sent, not booted.
   - **Web SSH tools (808e541):** upload (atomic, size-checked), "Install tools" (sweetlog etc. from
     the site's berga-tools.zip, unzipped in the page), kernel log via `sweetlog 86400 kernel`.
+  - **MDP SMMU state on fajita (device, sweetlog, zc1 boot 05:28):** sCR0 0x220406 (USFCFG 1,
+    CLIENTPD 0), 76 SMRs, 45 CBs; sid 0x880 = smr 0 0x80080880 (mask 0x8) s2cr 0x0 TRANSLATE cb 0;
+    sid 0xc80 = smr 1 0x80080c80 (mask 0x8) s2cr 0x0 TRANSLATE cb 0; cb 0 CBAR 0x10003 (S1, VMID 3)
+    CBA2R 0x1 (VA64). The identity bank exists as cb 3 (USB sid 0x740 -> smr 6). => 0254's adopt
+    path (mask <= 0x8) applies as designed; only the hypervisor's acceptance is unknown (zc2).
+    Touch fine on that boot (product id "S3706B" read at query+11, frames counted). The no-touch
+    boot was gpu5 (cause still unknown; needs its early SWEET GPU/TS lines). sweetlog over web
+    SSH works (159 lines in 232 s for a 30 min window: slow but usable). WLED fade: "WLED is off or
+    at 0; pixel fallback" (6T is AMOLED), harmless.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
