@@ -345,6 +345,18 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     test PASSED through the GPU SMMU, KEPT UP, SweetAdreno630 published. No GPU fault/lost line afterwards, touch ran.
     Next: Chlorophyll needs SSH (install chlorophyll-ios18.zip, tu_smoke, then Wire backboardd); the user's private
     key is on the PC, not the tablet.
+  - **🔺 Chlorophyll on fajita (user, 15:03-15:05, gpu8-zc-link2, web SSH):** chl_test **31/31** on the A630 of the 6T;
+    zip installed by the page, "Wire backboardd" done (backboardd links the inject, .orig kept), backboardd on
+    Chlorophyll: "device registered (kernel ABI minor 2)", "first command buffer completed", "healthy". User: "plus
+    fluide, vraie accel, mais artefacts à mort". One backboardd abort in QuartzCore at its first start (pid 62),
+    restarted (503) healthy. Copies instead of imports: RG8Unorm IOSurfaces (VkResult -1000158000, pitch 352/288/544)
+    and a fmt-80 281x609 surface (-1000072003).
+    * Suspect 1 (kernel, zero-copy): clean=always = sweet_dcache_clean_va over every scanned surface; on a
+      GPU-written surface a CPU clean can write stale dirty lines back over the GPU's pixels. ios26 ran Chlorophyll
+      with the plain copy framebuffer (no zc). A/B images (gitignored): gpu8-link2 (copy), gpu8-zc-clean0-link2
+      (never clean), gpu8-zc-clean3-link2 (clean only CPU-touched/unannounced frames).
+    * Suspect 2 (Chlorophyll, as on beryllium 2026-10-24 "dirty regions and async commits still break drawing"):
+      flags /private/var/tmp/bgmtl-bb.sync (BGMTL_SYNC) and bgmtl-bb.full (CA_DISABLE_DIRTY_REGIONS).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
