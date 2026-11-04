@@ -70,9 +70,9 @@ jobs:
         run: |
           P="$WORK/pkg"; mkdir -p "$P/usr/local/lib/bgmtl" "$P/var/root/chl-test" "$P/var/root/turnip-test" "$P/var/root/metal-turnip" "$P/LICENSES"
           cp "$WORK/out-metal/bgmtl-inject.dylib" "$WORK/out-metal/libchlorophyll.dylib" "$WORK/out-metal/libdrm.2.dylib" "$P/usr/local/lib/bgmtl/"
-          cp "$WORK/out-chl/"* "$P/var/root/chl-test/"
+          find "$WORK/out-chl" -maxdepth 1 -type f ! -name '*.o' ! -name '*.air' -exec cp {} "$P/var/root/chl-test/" \;
           cp "$WORK/out-turnip/tu_smoke" "$WORK/out-turnip/libvulkan_freedreno.dylib" "$WORK/out-turnip/libdrm.2.dylib" "$P/var/root/turnip-test/"
-          for f in "$WORK/out-metal/"*; do case "$f" in *.o|*.air) ;; *) cp "$f" "$P/var/root/metal-turnip/" ;; esac; done
+          find "$WORK/out-metal" -maxdepth 1 -type f ! -name '*.o' ! -name '*.air' -exec cp {} "$P/var/root/metal-turnip/" \;
           rm -f "$P"/var/root/*/*.o "$P"/var/root/*/*.air
           cp "$WORK/mesa-turnip26/mesa/docs/license.rst" "$P/LICENSES/Mesa-license.rst"
           cp "$WORK/libdrm-src/COPYING" "$P/LICENSES/libdrm-COPYING" 2>/dev/null || true
