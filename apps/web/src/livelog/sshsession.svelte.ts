@@ -151,13 +151,17 @@ class SshSession {
       // the SSH shell's PATH is minimal and this root may ship neither dmesg nor sysctl on it
       const cmd = [
         "export PATH=$PATH:/usr/sbin:/sbin:/usr/local/bin",
-        "if [ -x /usr/local/bin/sweetlog ]; then /usr/local/bin/sweetlog 86400 kernel",
+        // a day of the unified log is far too slow to walk: the last 30 min, only our kernel subsystems
+        "if [ -x /usr/local/bin/sweetlog ]; then /usr/local/bin/sweetlog 1800 'SWEET GPU' 'SWEET SMMU' 'SWEET TS' 'SWEET TOUCH' 'SWEET RPMH' 'SWEET FB' 2>&1",
         "elif command -v dmesg >/dev/null 2>&1; then dmesg",
         "elif command -v sysctl >/dev/null 2>&1; then sysctl -n kern.msgbuf",
         `else echo 'no sweetlog, dmesg or sysctl on this root: press "Install tools" first'; echo "PATH=$PATH"; ls /usr/sbin /sbin /usr/local/bin 2>/dev/null | tr '\\n' ' '; fi`,
       ].join("; ");
-      const { text } = await this.run(cmd);
+      const t0 = Date.now();
+      const { text, code } = await this.run(cmd);
       log.prependHistory(text, "kernel buffer at " + new Date().toLocaleTimeString());
+      const n = text.split("\n").filter((l) => l.trim()).length;
+      this.output = `kernel log: ${n} lines in ${((Date.now() - t0) / 1000).toFixed(1)} s (exit ${code}), put before the live log` + (n ? "" : `\n${text || "(no output)"}`);
     } catch (e) {
       this.error = explain(e as Error);
     } finally {
