@@ -368,6 +368,25 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     config (docs/FAJITA.md "The GPU"). Next for speed: 60 Hz (gpu8-direct-60hz-link2.img, sweetfb_hz=60; on beryllium
     60 Hz alone did not lift the ~31 fps cap) and the CPU thieves ios26 found: ReportCrash from the AUSP/BlastDoor/
     bluetoothd crash loops (disabled.plist + moving the on-demand executables, user OK needed).
+  - **Optimisation round 1 (user: "optimise CPU, GPU, battery, prepare sideload"), 2026-11-04 evening:**
+    * Measured (gpu8-zc log, after display off): A55 cluster load 100 % at 1766 MHz, A75 mostly 2.8 GHz; kernel
+      pollers that never rest: sweet_usb ud_thread 1 ms forever (1000 wakeups/s even unplugged), fajita touch
+      10 ms I2C poll forever (ATTN irq never seen). -> **0258** (CI 41878136142): USB 1 ms only within 50 polls of
+      an event, else 4 ms / 20 ms display off / 100 ms unconfigured, TX wakes the poller; touch 500 ms display off;
+      cpufreq: both clusters at LUT state 0 five seconds after display off (sweetcpufreq_offcap=0 to disable);
+      kern.sweet_display_off. Compile not checked locally (no Apple clang; CI is the check).
+    * GPU boot-args (no kernel change, all in docs/GPU_KERNEL.md, verified on beryllium): our gpu8 images had NO
+      sweetgpufreq, i.e. fixed 257 MHz. Daily set: sweetgpufreq=gov sweetgpuboost=4 sweetgpuhwcg=1
+      sweetgpuidle=3000 (slumber after 3 s without a submission, ~100-150 ms wake).
+    * CPU: web buttons "Quiet crash loops" / "Restore" (park SiriAUSP, MauiAUSP, MacinTalkAUSP, KonaSynthesizer,
+      MessagesBlastDoorService in /var/root/disabled-bin with a README of origins; launchctl disable bluetoothd), as
+      ios26 did (ReportCrash 100-156 % CPU there). Script tested against a fake root (dash).
+    * IOSurface RG8 import refusals: CA passes its own IOSurfaceBytesPerRow (16-aligned: 352 for 174 px) although
+      our limits say 64; Turnip's linear layout wants 64 -> Chlorophyll copies (works). Fix belongs in Chlorophyll.
+    * **Sideload ready (not phone-tested):** renegade-rs `ipa` (FairPlay check on LC_ENCRYPTION_INFO(_64), pacstrip,
+      ad-hoc resign inside-out keeping entitlements, CodeResources per bundle, ustar 0:80), WASM rr_prepare_ipa,
+      SSH panel "Install an app (.ipa)" (tar -x into /Applications, sweetuicache, installs sweetuicache from the
+      tools bundle if missing) + "Remove an app". Tests: tests/ipa.rs (GNU tar extracts it), web wasm test.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
