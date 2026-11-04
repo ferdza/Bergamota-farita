@@ -211,6 +211,20 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     into ABL's MDP context bank (walk its TTBR0, add block entries, TLBI) or put the pool in
     a region ABL already maps. Also: 0126's backlight fade drives PMI8998 WLED (Poco LCD);
     the 6T is AMOLED (DCS brightness) — fade/off on fajita to check.
+  - **GPU on fajita — complexity assessed (2026-11-04), not started:**
+    (1) Kernel: all 23 GPU patches (0103..0251: A630 bring-up, GMU, zap PAS, IOKit user
+    client, IOSurface import, DCVS, Chlorophyll Metal plugin) are ALREADY in patches-11215
+    and in our fajita kernel (beryllium-gated, active via the ADT); OFF by default, boot-arg
+    `sweetgpu=N`. (2) Firmware from /usr/local/share/firmware/: a630_sqe.fw, a630_gmu.bin
+    (generic) and a630_zap.mdt(+segments), OEM-signed -> must be OnePlus's (zap carve-out
+    0x8c415000 is the same on fajita). (3) Userland = Chlorophyll (ry-diffusion/Chlorophyll,
+    branch ios26 = d3cb665 = our gpu/metal gitlink, published): Metal over Turnip, built with
+    `-miphoneos-version-min=18.0` (README: "iOS 18 on the Poco F1"), but the build needs macOS
+    (xcrun iphoneos SDK, metal/metallib, codesign, brew bison/glslang, meson venv, Mesa +
+    libdrm trees, gpu/freedreno-sweet) -> a new macOS GitHub Actions workflow. (4) Install
+    libchlorophyll + inject (backboardd, SpringBoard, …) into the root (web SSH upload or
+    Renegade). Fajita unknowns: GPU SMMU state left by OnePlus ABL (the MDP was translating),
+    OnePlus zap authentication by TZ.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
