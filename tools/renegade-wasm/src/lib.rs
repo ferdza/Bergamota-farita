@@ -261,3 +261,24 @@ pub unsafe extern "C" fn rr_build(cfg_ptr: *const u8, cfg_len: usize) -> i32 {
         }
     }
 }
+
+/// Links a library into a system binary the page read over SSH (Chlorophyll's inject into backboardd): `bin` is the Mach-O,
+/// `path` the library's install path, `weak` 1 for LC_LOAD_WEAK_DYLIB. On success the result buffer holds the PAC-stripped,
+/// re-signed binary (identifier, flags and entitlements kept); on failure, the error text. Uses no host import.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rr_link_dylib(bin_ptr: *const u8, bin_len: usize, path_ptr: *const u8, path_len: usize, weak: i32) -> i32 {
+    // SAFETY: the host passes buffers it got from rr_alloc
+    let bin = unsafe { std::slice::from_raw_parts(bin_ptr, bin_len) };
+    // SAFETY: as above
+    let path = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(path_ptr, path_len) }).into_owned();
+    match renegade::tools::link_dylib(bin, &path, weak != 0) {
+        Ok(signed) => {
+            RESULT.with(|r| *r.borrow_mut() = signed);
+            0
+        }
+        Err(e) => {
+            set_result(e.to_string());
+            1
+        }
+    }
+}

@@ -4,6 +4,8 @@
 import { log } from "./logsession.svelte.ts";
 import { SshClient, SshError, type SshChannel } from "../lib/ssh.ts";
 import { planZip } from "../lib/zipinstall.ts";
+import wasmUrl from "../patcher/renegade.wasm?url";
+import { Renegade } from "../patcher/wasm.ts";
 import { decodeConsoleRing, READ_RING_CMD, RING_BLOCKS } from "../lib/consolering.ts";
 import { parseOpenSshKey, publicLine, SshKeyError, type Ed25519Key } from "../lib/sshkey.ts";
 
@@ -191,6 +193,93 @@ class SshSession {
       this.cancel = null;
       this.busy = null;
     }
+  }
+
+  /** Raw stdout of one command (a binary read with cat); throws on a non-zero exit. */
+  private async fetchBytes(cmd: string): Promise<Uint8Array> {
+    if (!this.client) throw new SshError("SSH is not connected");
+    const r = await this.client.run(cmd);
+    if (r.code !== 0) throw new SshError(`${cmd}: ${new TextDecoder().decode(r.stderr).trim() || `exit ${r.code}`}`);
+    return r.stdout;
+  }
+
+  private renegade: Promise<Renegade> | null = null;
+
+  /**
+   * Chlorophyll as the compositor, the way the iOS 26 branch runs it ("direct mode"): backboardd gets the inject as a WEAK
+   * load command (re-signed ad hoc in this page, identifier and entitlements kept; the original stays as backboardd.orig),
+   * and bgmtl-bb.arm + bgmtl-bb.direct switch it on. The inject still checks, at every start: bgmtl-bb.off (kill switch, also
+   * written by its own dead-man), the kernel's GPU state (sweetgpu=8), and that it can make the device; otherwise backboardd
+   * runs stock. Takes effect at the next boot. Recovery without SSH: boot-arg sweetdenypath=/usr/local/lib/bgmtl/bgmtl-inject.dylib.
+   */
+  async gpuWire() {
+    if (!this.client) return;
+    const BB = "/usr/libexec/backboardd", INJ = "/usr/local/lib/bgmtl/bgmtl-inject.dylib";
+    this.output = null;
+    try {
+      this.busy = "Checking Chlorophyll's files on the phone…";
+      const have = await this.run(`for f in ${INJ} /usr/local/lib/bgmtl/libchlorophyll.dylib /usr/local/lib/bgmtl/libdrm.2.dylib; do [ -s $f ] || echo "missing $f"; done; [ -e ${BB}.orig ] && echo HAVE_ORIG`);
+      if (/missing/.test(have.text)) throw new SshError(`${have.text.split("\n").filter((l) => l.startsWith("missing")).join(", ")}: install chlorophyll-ios18.zip first`);
+      const fromOrig = /HAVE_ORIG/.test(have.text);
+      this.busy = `Reading ${fromOrig ? BB + ".orig" : BB}…`;
+      const bin = await this.fetchBytes(`cat ${fromOrig ? BB + ".orig" : BB}`);
+      this.busy = "Linking the inject and re-signing (in this page)…";
+      this.renegade ??= fetch(wasmUrl).then((r) => r.arrayBuffer()).then((b) => Renegade.standalone(b));
+      // iOS 26 kept a short name for binaries with little header slack: /usr/local/bgi.dylib, a symlink to the inject
+      let lib = INJ;
+      let signed: Uint8Array;
+      try {
+        signed = (await this.renegade).linkDylib(bin, INJ, true);
+      } catch (e) {
+        if (!/no slack/.test((e as Error).message)) throw e;
+        lib = "/usr/local/bgi.dylib";
+        signed = (await this.renegade).linkDylib(bin, lib, true);
+        const l = await this.run(`ln -sf ${INJ} ${lib} && ls -l ${lib}`);
+        if (l.code !== 0) throw new SshError(`could not make ${lib}: ${l.text.trim()}`);
+      }
+      if (!fromOrig) {
+        this.busy = "Keeping the original as backboardd.orig…";
+        const r = await this.run(`cp -p ${BB} ${BB}.orig && [ "$(wc -c < ${BB})" = "$(wc -c < ${BB}.orig)" ] && echo SAVED`);
+        if (!/SAVED/.test(r.text)) throw new SshError(`could not save ${BB}.orig: ${r.text.trim()}`);
+      }
+      this.busy = `Writing the new backboardd (${Math.round(signed.length / 1024)} KB)…`;
+      await this.upload(BB, signed, "755");
+      const f = await this.run(
+        "cd /private/var/tmp && rm -f bgmtl-bb.off bgmtl-bb.state && echo 'armed from the web page' > bgmtl-bb.arm && : > bgmtl-bb.direct && ls -l bgmtl-bb.*",
+      );
+      this.output =
+        `backboardd now links ${lib}${lib !== INJ ? ` (-> ${INJ})` : ""} (weak; original in ${BB}.orig, ${bin.length} -> ${signed.length} bytes)\n${f.text.trim()}\n` +
+        "Takes effect at the next boot (do not kill backboardd: launchd counts it as a crash). It stays stock unless the kernel's GPU is up (sweetgpu=8).\n" +
+        `If it ever loops: boot with sweetdenypath=${lib}, then "GPU off" or "Restore backboardd".`;
+    } catch (e) {
+      this.error = explain(e as Error);
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  /** The kill switch (what the inject's dead-man writes): backboardd starts stock from its next start, wiring kept. */
+  async gpuOff() {
+    await this.runStreamed("GPU off", "cd /private/var/tmp && echo 'off from the web page' > bgmtl-bb.off && ls -l bgmtl-bb.*");
+  }
+
+  /** Back to Apple's backboardd (from backboardd.orig) and the flags removed. */
+  async gpuRestore() {
+    await this.runStreamed(
+      "Restore backboardd",
+      "B=/usr/libexec/backboardd; [ -s $B.orig ] || { echo \"no $B.orig: backboardd was never wired\"; exit 1; }; " +
+        "cp -p $B.orig $B.part && mv -f $B.part $B && [ \"$(wc -c < $B)\" = \"$(wc -c < $B.orig)\" ] && echo \"restored $B\" && rm -f /private/var/tmp/bgmtl-bb.arm /private/var/tmp/bgmtl-bb.direct; ls -l /private/var/tmp/bgmtl* 2>/dev/null",
+    );
+  }
+
+  /** Flags, what backboardd links, and the inject's own log. */
+  async gpuStatus() {
+    await this.runStreamed(
+      "Chlorophyll status",
+      "B=/usr/libexec/backboardd; ls -l $B $B.orig /usr/local/lib/bgmtl/ 2>&1; echo; ls -l /private/var/tmp/bgmtl* 2>&1; echo; " +
+        "for f in /private/var/tmp/bgmtl-bb.state /private/var/tmp/bgmtl-bb.off; do [ -e $f ] && { echo \"== $f\"; cat $f; }; done; " +
+        "echo '== bgmtl.log (last 60 lines)'; tail -n 60 /private/var/tmp/bgmtl.log 2>/dev/null || echo '(no log yet: the inject has not run)'",
+    );
   }
 
   /** A command whose output streams into the log box (GPU tests); Stop ends it, Download .txt keeps it. */

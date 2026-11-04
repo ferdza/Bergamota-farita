@@ -48,6 +48,7 @@ interface Exports {
   rr_result_len(): number;
   rr_open_ipsw(): number;
   rr_build(p: number, n: number): number;
+  rr_link_dylib(bin: number, binLen: number, path: number, pathLen: number, weak: number): number;
 }
 
 export class PatcherError extends Error {}
@@ -97,6 +98,36 @@ export class Renegade {
   private result(): string {
     const { rr_result_ptr, rr_result_len, memory } = this.x;
     return new TextDecoder().decode(new Uint8Array(memory.buffer, rr_result_ptr(), rr_result_len()).slice());
+  }
+
+  /** Copies bytes into module memory; the caller frees. */
+  private put(b: Uint8Array): number {
+    const p = this.x.rr_alloc(b.length);
+    new Uint8Array(this.x.memory.buffer, p, b.length).set(b);
+    return p;
+  }
+
+  /**
+   * Adds a (weak) load command for `path` to a Mach-O and re-signs it ad hoc, keeping identifier, flags and entitlements
+   * (Chlorophyll's inject into backboardd, iOS 26's "direct mode"). Throws PatcherError with the reason (no header slack, already linked...).
+   */
+  linkDylib(bin: Uint8Array, path: string, weak = true): Uint8Array {
+    const pb = new TextEncoder().encode(path);
+    const bp = this.put(bin), pp = this.put(pb);
+    const rc = this.x.rr_link_dylib(bp, bin.length, pp, pb.length, weak ? 1 : 0);
+    this.x.rr_free(bp, bin.length);
+    this.x.rr_free(pp, pb.length);
+    const out = new Uint8Array(this.x.memory.buffer, this.x.rr_result_ptr(), this.x.rr_result_len()).slice();
+    if (rc !== 0) throw new PatcherError(new TextDecoder().decode(out));
+    return out;
+  }
+
+  /** The module with no IPSW, image or tools behind it: for the single-file calls (linkDylib). */
+  static async standalone(module: WebAssembly.Module | BufferSource): Promise<Renegade> {
+    const none = () => {
+      throw new PatcherError("no host source in a standalone module");
+    };
+    return Renegade.load(module, { size: () => 0, read: none, write: none, event: () => {} });
   }
 
   openIpsw(): IpswInfo {

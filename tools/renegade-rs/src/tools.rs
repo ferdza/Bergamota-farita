@@ -249,6 +249,38 @@ fn bluetooth_stub(fs: &mut dyn Fs, log: &mut Log, t: &Tools) -> Result<()> {
 
 /// The load command addlc.py appends: LC_LOAD_DYLIB for `path` in the slack before the first section.
 pub fn add_load_dylib(d: &mut [u8], path: &str) -> Result<()> {
+    add_dylib_command(d, path, 0xC)
+}
+
+/// LC_LOAD_WEAK_DYLIB: dyld starts the binary without the library when it is missing (or hidden by the kernel's
+/// sweetdenypath boot-arg), so a broken inject never keeps a system daemon from starting.
+pub fn add_weak_dylib(d: &mut [u8], path: &str) -> Result<()> {
+    add_dylib_command(d, path, 0x8000_0018)
+}
+
+/// What the web page does over SSH to put Chlorophyll's inject into a system binary (iOS 26's "direct mode" for backboardd):
+/// PAC-strip (a no-op on a binary the root build already stripped), add the (weak) load command, re-sign ad hoc keeping the
+/// identifier, flags and entitlements, and check the result. The binary must not link `path` yet.
+pub fn link_dylib(bin: &[u8], path: &str, weak: bool) -> Result<Vec<u8>> {
+    if has_dylib(bin, path) {
+        return Err(bad(format!("it already links {path}")));
+    }
+    let before = crate::codesign::identity(bin).ok_or_else(|| bad("no code signature to keep"))?;
+    let mut d = bin.to_vec();
+    crate::pacstrip::strip(&mut d, &crate::pacstrip::Options { write: true, ..Default::default() })?;
+    if weak { add_weak_dylib(&mut d, path)? } else { add_load_dylib(&mut d, path)? }
+    let signed = crate::codesign::resign(&d, None, None)?;
+    let after = crate::codesign::identity(&signed).ok_or_else(|| bad("the re-sign lost the signature"))?;
+    if after.ident != before.ident {
+        return Err(bad(format!("the re-sign changed the identifier ({} -> {})", before.ident, after.ident)));
+    }
+    if !has_dylib(&signed, path) {
+        return Err(bad("the load command is missing after the re-sign"));
+    }
+    Ok(signed)
+}
+
+fn add_dylib_command(d: &mut [u8], path: &str, lc_cmd: u32) -> Result<()> {
     use crate::bytes::{u32le, u64le};
     if d.len() < 32 || u32le(d, 0) != 0xFEED_FACF {
         return Err(bad("thin 64-bit Mach-O only"));
@@ -278,7 +310,7 @@ pub fn add_load_dylib(d: &mut [u8], path: &str) -> Result<()> {
         return Err(bad(format!("no slack for a new load command ({} free, {cmdsz} needed)", lowest.saturating_sub(end as u64))));
     }
     let mut lc = Vec::new();
-    for v in [0xCu32, cmdsz as u32, 24, 2, 0x10000, 0x10000] {
+    for v in [lc_cmd, cmdsz as u32, 24, 2, 0x10000, 0x10000] {
         lc.extend_from_slice(&v.to_le_bytes());
     }
     lc.extend_from_slice(&nm);

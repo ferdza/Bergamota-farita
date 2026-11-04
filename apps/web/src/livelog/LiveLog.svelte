@@ -136,7 +136,13 @@
             <span class="muted">GPU tests (after installing chlorophyll-ios18.zip):</span>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("tu_smoke", "cd /var/root/turnip-test && ./tu_smoke")}>tu_smoke</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("chl_test", "cd /var/root/chl-test && ./chl_test bg_kernels.metallib bg_render.metallib")}>chl_test</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("GPU state", "ioreg -l -c SweetAdreno630 2>/dev/null | head -40 || echo no ioreg; ls -l /dev/sweetgpu* 2>&1")}>GPU state</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.gpuStatus()}>Chlorophyll status</button>
+          </div>
+          <div class="row acts2">
+            <span class="muted">Compositor on the GPU (iOS 26 "direct mode", next boot, needs a sweetgpu=8 boot):</span>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => confirm("Link Chlorophyll's inject into backboardd (the original is kept as backboardd.orig) and arm it? It takes effect at the next boot.") && sshs.gpuWire()}>Wire backboardd</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.gpuOff()}>GPU off (kill switch)</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => confirm("Put Apple's backboardd back (from backboardd.orig)?") && sshs.gpuRestore()}>Restore backboardd</button>
           </div>
           {#if sshs.busy}
             <div class="busy">
