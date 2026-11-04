@@ -1,0 +1,55 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 3413016..01c20dd 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -1072,9 +1072,10 @@ static void
+ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
+ {
+ 	static char chunk[1400];
+-	socket_t so = NULL;
++	socket_t so = NULL, rq = NULL;
+ 	struct sockaddr_in to;
+ 	uint64_t pos = sweet_log_position();
++	uint32_t replays = 0;
+ 
+ 	pos = pos > 65536 ? pos - 65536 : 0;
+ 	bzero(&to, sizeof(to));
+@@ -1091,6 +1092,38 @@ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
+ 			so = NULL;
+ 			continue;
+ 		}
++		/*
++		 * 0257: "REPLAY" in a datagram to the phone's UDP port 5141 sends the console again from the start of the
++		 * ring (the whole boot while it fits in 4 MiB). What went out before anyone listened is lost: until the web
++		 * page answers ARP the stack holds one packet and drops the rest, and a host that configures the USB device
++		 * at plug-in (an Android tablet, Linux) does so long before the page connects. The page asks on connect.
++		 */
++		if (rq == NULL && sock_socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, NULL, &rq) == 0) {
++			struct sockaddr_in me;
++			bzero(&me, sizeof(me));
++			me.sin_len = sizeof(me);
++			me.sin_family = AF_INET;
++			me.sin_port = htons(5141);
++			if (sock_bind(rq, (struct sockaddr *)&me) != 0) {
++				sock_close(rq);
++				rq = NULL;
++			}
++		}
++		if (rq != NULL) {
++			char req[16];
++			struct iovec riov = { .iov_base = req, .iov_len = sizeof(req) };
++			struct msghdr rmsg = { .msg_iov = &riov, .msg_iovlen = 1 };
++			size_t got = 0;
++			while (sock_receive(rq, &rmsg, MSG_DONTWAIT, &got) == 0 && got > 0) {
++				if (got >= 6 && memcmp(req, "REPLAY", 6) == 0) {
++					pos = 0;        /* sweet_log_copy clamps it to the oldest byte still in the ring */
++					replays++;
++				}
++				riov.iov_base = req;
++				riov.iov_len = sizeof(req);
++				got = 0;
++			}
++		}
+ 		uint32_t n;
+ 		uint64_t sent_upto = pos;
+ 		while ((n = sweet_log_copy(&pos, chunk, sizeof(chunk))) > 0) {

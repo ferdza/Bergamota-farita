@@ -196,6 +196,7 @@
       <div class="acts">
         <button class:on={log.paused} onclick={() => (log.paused = !log.paused)} aria-pressed={log.paused}>{log.paused ? "Paused" : "Pause"}</button>
         <button class:on={log.follow} onclick={() => (log.follow = !log.follow)} aria-pressed={log.follow}>Follow</button>
+        <button onclick={() => log.replay()} disabled={log.state !== "live"} title="The phone sends its log again from the first line of this boot">Log since boot</button>
         <button onclick={() => log.clear()}>Clear</button>
         <button onclick={() => log.save()} disabled={!log.lines.length}>Save .txt</button>
       </div>

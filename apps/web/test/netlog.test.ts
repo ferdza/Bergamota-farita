@@ -146,3 +146,20 @@ test("whoHas() is a broadcast ARP request for the phone from our address", () =>
   assert.equal(ipToStr(arp.tpa), "192.168.7.2");
   assert.equal(macToStr(arp.sha), macToStr(HOST_MAC));
 });
+
+test("REPLAY request: UDP 5140 -> 192.168.7.2:5141 to the phone's MAC, valid IPv4 header", async () => {
+  const { NetLogEngine } = await import("../src/lib/netlog.ts");
+  const { parseEthernet, parseIPv4, parseUDP, PHONE_MAC, eqBytes, ipToStr } = await import("../src/lib/ethernet.ts");
+  const { checksum } = await import("../src/lib/ipstack.ts");
+  const f = new NetLogEngine().replayRequest();
+  const eth = parseEthernet(f)!;
+  assert.ok(eqBytes(eth.dst, PHONE_MAC));
+  assert.equal(eth.ethertype, 0x0800);
+  const ip = parseIPv4(eth.payload)!;
+  assert.equal(ipToStr(ip.dst), "192.168.7.2");
+  assert.equal(checksum(eth.payload.subarray(0, 20)), 0);
+  const udp = parseUDP(ip.payload)!;
+  assert.equal(udp.srcPort, 5140);
+  assert.equal(udp.dstPort, 5141);
+  assert.equal(new TextDecoder().decode(udp.payload), "REPLAY");
+});

@@ -2,7 +2,8 @@
 // answer its ARP for 192.168.7.1 and turn the UDP/5140 datagrams into text lines. Pure and unit-tested;
 // the WebUSB plumbing that feeds it lives in usbnet.ts.
 
-import { buildArpReply, buildEthernet, eqBytes, ETH_ARP, ETH_IPV4, HOST_IP, HOST_MAC, isArpRequestFor, LOG_PORT, parseArp, parseEthernet, parseIPv4, parseIpStr, parseUDP, PHONE_IP, udpToPort } from "./ethernet.ts";
+import { buildArpReply, buildEthernet, eqBytes, ETH_ARP, ETH_IPV4, HOST_IP, HOST_MAC, isArpRequestFor, LOG_PORT, parseArp, parseEthernet, parseIPv4, parseIpStr, parseUDP, PHONE_IP, PHONE_MAC, REPLAY_PORT, udpToPort } from "./ethernet.ts";
+import { buildIPv4 } from "./ipstack.ts";
 
 /** Log tags, in the same bit order as the Mac app (LogStore.swift) so saved logs read the same. */
 export const LOG_TAGS = ["SWEET USB", "SWEET GPU", "SWEET WLAN", "SWEET FB", "CRASH"] as const;
@@ -104,6 +105,22 @@ export class NetLogEngine {
       s.lastUdpPort = udp.dstPort;
     }
     return logBytes ? { logBytes } : {};
+  }
+
+  /**
+   * UDP "REPLAY" to the phone's port 5141 (kernel 0257): it sends its console again from the oldest byte of its
+   * 4 MiB ring, i.e. the whole boot, which went out before the page listened and was lost. Older kernels ignore it.
+   */
+  replayRequest(): Uint8Array {
+    const body = new TextEncoder().encode("REPLAY");
+    const udp = new Uint8Array(8 + body.length);
+    const v = new DataView(udp.buffer);
+    v.setUint16(0, LOG_PORT, false);
+    v.setUint16(2, REPLAY_PORT, false);
+    v.setUint16(4, udp.length, false); // checksum 0 = none (allowed over IPv4)
+    udp.set(body, 8);
+    const ip = buildIPv4(this.selfIp, parseIpStr(PHONE_IP), 17, udp, (Math.random() * 0xffff) | 0);
+    return buildEthernet(PHONE_MAC, this.selfMac, ETH_IPV4, ip);
   }
 
   /** ARP "who has 192.168.7.2": makes the phone answer and learn our MAC at once. */

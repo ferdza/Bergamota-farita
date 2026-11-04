@@ -68,6 +68,9 @@ class LogSession {
       await net.send(this.engine.whoHas()).catch(() => {});
       void net.pollNotifications();
       this.pump(net);
+      // what the phone logged before this page listened went nowhere: ask for it again (kernel 0257), once the
+      // phone has learned our MAC from the ARP above
+      setTimeout(() => void this.replay(), 700);
     } catch (e) {
       const err = e as Error;
       if (err.name === "NotFoundError") {
@@ -154,6 +157,13 @@ class LogSession {
   }
 
   /** A line from the page itself (SSH progress…), shown in the log as "# …". */
+  /** Asks the phone to send its whole console ring again (the boot from its first line, while it fits in 4 MiB). */
+  async replay() {
+    if (!this.net || !this.engine || this.state !== "live") return;
+    this.note("asked the phone for its log since boot (REPLAY to UDP 5141; a kernel without 0257 just ignores it)");
+    await this.net.send(this.engine.replayRequest()).catch(() => {});
+  }
+
   note(text: string) {
     this.pending.push({ id: this.nextId++, text: `# ${text}`, tags: 0 });
   }
