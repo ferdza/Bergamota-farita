@@ -122,3 +122,27 @@ test("announce() is a broadcast gratuitous ARP for our IP", () => {
   assert.equal(ipToStr(arp.spa), "192.168.7.1");
   assert.equal(macToStr(arp.sha), macToStr(HOST_MAC));
 });
+
+test("engine counts what arrives, so 'no log' can be told from 'nothing at all'", () => {
+  const eng = new NetLogEngine();
+  eng.handle(arpRequest(HOST_IP));
+  eng.handle(udpFrame(5140, new TextEncoder().encode("x\n")));
+  eng.handle(udpFrame(53, new TextEncoder().encode("dns")));
+  eng.handle(ethFrame(HOST_MAC, PHONE_MAC, 0x86dd, new Uint8Array(40))); // IPv6
+  assert.deepEqual(
+    { f: eng.stats.frames, a: eng.stats.arpRequests, ip: eng.stats.ipv4, log: eng.stats.logDatagrams, udp: eng.stats.otherUdp, port: eng.stats.lastUdpPort, other: eng.stats.otherEth },
+    { f: 4, a: 1, ip: 2, log: 1, udp: 1, port: 53, other: 1 },
+  );
+  assert.equal(eng.arpReplies, 1);
+});
+
+test("whoHas() is a broadcast ARP request for the phone from our address", () => {
+  const eng = new NetLogEngine();
+  const eth = parseEthernet(eng.whoHas())!;
+  assert.equal(macToStr(eth.dst), "ff:ff:ff:ff:ff:ff");
+  const arp = parseArp(eth.payload)!;
+  assert.equal(arp.oper, 1);
+  assert.equal(ipToStr(arp.spa), "192.168.7.1");
+  assert.equal(ipToStr(arp.tpa), "192.168.7.2");
+  assert.equal(macToStr(arp.sha), macToStr(HOST_MAC));
+});

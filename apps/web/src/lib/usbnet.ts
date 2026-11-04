@@ -41,6 +41,10 @@ export class UsbNet {
   private mtu = 1600;
   private dataIface = -1;
   private commIface = -1;
+  private epNotify = 0;
+  /** Latest ECM NETWORK_CONNECTION notification: true = the phone says the link is up. */
+  linkUp: boolean | null = null;
+  notifications = 0;
   private stopped = false;
 
   private constructor(usb: USBDevice) {
@@ -77,6 +81,8 @@ export class UsbNet {
 
     const comm = cfg.interfaces.find((i) => i.alternates.some((a) => a.interfaceClass === CDC_COMM && a.interfaceSubclass === CDC_ECM_SUBCLASS));
     net.commIface = comm?.interfaceNumber ?? -1;
+    const commAlt = comm?.alternates.find((a) => a.interfaceClass === CDC_COMM);
+    net.epNotify = commAlt?.endpoints.find((e) => e.type === "interrupt" && e.direction === "in")?.endpointNumber ?? 0;
 
     // Claim the control interface first so we can enable reception, then the data interface.
     try {
@@ -116,6 +122,23 @@ export class UsbNet {
     out.set(frame);
     const r = await this.usb.transferOut(this.epOut, out);
     if (r.status !== "ok") throw new UsbNetError(`USB write failed (${r.status})`);
+  }
+
+  /** Reads the ECM interrupt endpoint (NETWORK_CONNECTION / SPEED_CHANGE), as cdc_ether does. Runs until close(). */
+  async pollNotifications(): Promise<void> {
+    if (!this.epNotify) return;
+    while (!this.stopped) {
+      try {
+        const r = await this.usb.transferIn(this.epNotify, 16);
+        if (r.status === "ok" && r.data && r.data.byteLength >= 8) {
+          this.notifications++;
+          // bmRequestType 0xa1, bNotificationCode 0x00 = NETWORK_CONNECTION, wValue 1 = connected
+          if (r.data.getUint8(1) === 0x00) this.linkUp = r.data.getUint16(2, true) === 1;
+        } else if (r.status === "stall") await this.usb.clearHalt("in", this.epNotify).catch(() => {});
+      } catch {
+        return;
+      }
+    }
   }
 
   /** Each received Ethernet frame, until close() or the device goes away. */

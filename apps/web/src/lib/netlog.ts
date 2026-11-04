@@ -2,7 +2,7 @@
 // answer its ARP for 192.168.7.1 and turn the UDP/5140 datagrams into text lines. Pure and unit-tested;
 // the WebUSB plumbing that feeds it lives in usbnet.ts.
 
-import { buildArpReply, buildEthernet, eqBytes, ETH_ARP, HOST_IP, HOST_MAC, isArpRequestFor, LOG_PORT, parseArp, parseEthernet, parseIpStr, udpToPort } from "./ethernet.ts";
+import { buildArpReply, buildEthernet, eqBytes, ETH_ARP, ETH_IPV4, HOST_IP, HOST_MAC, isArpRequestFor, LOG_PORT, parseArp, parseEthernet, parseIPv4, parseIpStr, parseUDP, PHONE_IP, udpToPort } from "./ethernet.ts";
 
 /** Log tags, in the same bit order as the Mac app (LogStore.swift) so saved logs read the same. */
 export const LOG_TAGS = ["SWEET USB", "SWEET GPU", "SWEET WLAN", "SWEET FB", "CRASH"] as const;
@@ -64,6 +64,8 @@ export class NetLogEngine {
   readonly selfMac: Uint8Array;
   readonly selfIp: Uint8Array;
   arpReplies = 0;
+  /** What came in, so the page can tell "the phone sends nothing" from "it sends, but no log". */
+  stats = { frames: 0, arpRequests: 0, ipv4: 0, logDatagrams: 0, otherUdp: 0, otherEth: 0, last: "", lastUdpPort: 0 };
 
   constructor(selfMac: Uint8Array = HOST_MAC, selfIp: Uint8Array = parseIpStr(HOST_IP)) {
     this.selfMac = selfMac;
@@ -73,8 +75,12 @@ export class NetLogEngine {
   handle(frame: Uint8Array): Handled {
     const eth = parseEthernet(frame);
     if (!eth) return {};
+    const s = this.stats;
+    s.frames++;
     if (eth.ethertype === ETH_ARP) {
+      s.last = "ARP";
       const arp = parseArp(eth.payload);
+      if (arp && arp.oper === 1) s.arpRequests++;
       if (arp && isArpRequestFor(arp, this.selfIp)) {
         this.arpReplies++;
         const reply = buildEthernet(arp.sha, this.selfMac, ETH_ARP, buildArpReply(arp, this.selfMac, this.selfIp));
@@ -82,8 +88,37 @@ export class NetLogEngine {
       }
       return {};
     }
+    if (eth.ethertype !== ETH_IPV4) {
+      s.otherEth++;
+      s.last = `ethertype 0x${eth.ethertype.toString(16)}`;
+      return {};
+    }
+    s.ipv4++;
+    const ip = parseIPv4(eth.payload);
+    const udp = ip && ip.proto === 17 ? parseUDP(ip.payload) : null;
+    s.last = ip ? (udp ? `UDP ${udp.dstPort}` : `IPv4 proto ${ip.proto}`) : "IPv4 (bad)";
     const logBytes = udpToPort(frame, LOG_PORT);
+    if (logBytes) s.logDatagrams++;
+    else if (udp) {
+      s.otherUdp++;
+      s.lastUdpPort = udp.dstPort;
+    }
     return logBytes ? { logBytes } : {};
+  }
+
+  /** ARP "who has 192.168.7.2": makes the phone answer and learn our MAC at once. */
+  whoHas(target: Uint8Array = parseIpStr(PHONE_IP)): Uint8Array {
+    const p = new Uint8Array(28);
+    const v = new DataView(p.buffer);
+    v.setUint16(0, 1, false);
+    v.setUint16(2, 0x0800, false);
+    p[4] = 6;
+    p[5] = 4;
+    v.setUint16(6, 1, false); // request
+    p.set(this.selfMac, 8);
+    p.set(this.selfIp, 14);
+    p.set(target, 24); // tha stays zero
+    return buildEthernet(Uint8Array.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), this.selfMac, ETH_ARP, p);
   }
 
   /** A gratuitous ARP announcing 192.168.7.1 is at our MAC — primes the phone's table before it asks. */

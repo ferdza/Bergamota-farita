@@ -21,6 +21,8 @@ class LogSession {
   total = $state(0);
   linesPerSec = $state(0);
   arpReplies = $state(0);
+  stats = $state({ frames: 0, arpRequests: 0, ipv4: 0, logDatagrams: 0, otherUdp: 0, otherEth: 0, last: "", lastUdpPort: 0 });
+  linkUp = $state<boolean | null>(null);
   deviceName = $state<string | null>(null);
   /** Why the connect failed, when it is the computer's setup rather than the phone. */
   setup = $state<"access" | "busy" | null>(null);
@@ -58,6 +60,8 @@ class LogSession {
       this.startFlush();
       // prime the phone's ARP table, then pump frames
       await net.send(this.engine.announce()).catch(() => {});
+      await net.send(this.engine.whoHas()).catch(() => {});
+      void net.pollNotifications();
       this.pump(net);
     } catch (e) {
       const err = e as Error;
@@ -84,7 +88,6 @@ class LogSession {
         const { reply, logBytes } = this.engine.handle(frame);
         if (reply) await net.send(reply).catch(() => {});
         if (logBytes) {
-          this.arpReplies = this.engine.arpReplies;
           for (const text of this.assembler.push(logBytes)) {
             this.pending.push({ id: this.nextId++, text, tags: classifyTags(text) });
           }
@@ -103,6 +106,9 @@ class LogSession {
   }
 
   private flush() {
+    this.stats = { ...this.engine.stats };
+    this.arpReplies = this.engine.arpReplies;
+    this.linkUp = this.net?.linkUp ?? null;
     const n = this.pending.length;
     this.updateRate(n);
     if (!n) return;

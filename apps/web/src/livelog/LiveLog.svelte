@@ -48,7 +48,8 @@
           <i class="dot"></i>
           <div>
             <b>{log.deviceName}</b>
-            <small>{PHONE_IP} → {HOST_IP}:{LOG_PORT} · {log.arpReplies} ARP {log.arpReplies === 1 ? "reply" : "replies"}</small>
+            <small>{PHONE_IP} → {HOST_IP}:{LOG_PORT} · link {log.linkUp === null ? "?" : log.linkUp ? "up" : "DOWN"}</small>
+            <small class="diag">frames {log.stats.frames} · ARP in {log.stats.arpRequests}/out {log.arpReplies} · IPv4 {log.stats.ipv4} · log {log.stats.logDatagrams} · other UDP {log.stats.otherUdp}{log.stats.otherUdp ? ` (last :${log.stats.lastUdpPort})` : ""} · non-IP {log.stats.otherEth}{log.stats.last ? ` · last ${log.stats.last}` : ""}</small>
           </div>
         </div>
         <div class="stats">
@@ -130,6 +131,7 @@
   .who div { display: grid; }
   .who b { font-size: 17px; }
   .who small { color: var(--ink-soft); font: 400 12.5px var(--mono); }
+  .who small.diag { font-size: 11.5px; }
   .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--leaf); box-shadow: 0 0 0 4px color-mix(in srgb, var(--leaf) 30%, transparent); }
   .dot.off { background: var(--ink-faint); box-shadow: none; }
   .live .dot { animation: pulse 1.4s ease-in-out infinite; }
