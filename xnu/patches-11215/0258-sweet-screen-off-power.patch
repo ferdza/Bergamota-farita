@@ -160,7 +160,7 @@ index 2460e6d..68cf74a 100644
  start:
  	if (kernel_thread_start((thread_continue_t)cf_thread, NULL, &thread) == KERN_SUCCESS) {
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 4c250ca..a19896c 100644
+index 4c250ca..7151525 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -51,6 +51,7 @@ extern "C" int sweet_smmu_adopt_sid(unsigned sid);            /* bsd/dev/sweet_s
@@ -171,11 +171,28 @@ index 4c250ca..a19896c 100644
  extern "C" uint32_t sweet_gpu_fence_snapshot(void);     /* bsd/dev/sweet_a630.c (0229) */
  extern "C" bool sweet_gpu_blit_window(uint64_t pa, uint64_t size);      /* bsd/dev/sweet_a630.c (0240) */
  extern "C" uint32_t sweet_gpu_blit(uint64_t src_pa, uint32_t src_pitch, uint64_t dst_pa, uint32_t dst_pitch, uint32_t w, uint32_t h);
-@@ -3627,6 +3628,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+@@ -1009,7 +1010,12 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 			fb->fBlackDone = true;
+ 			fb->blackout();
+ 		}
+-		sender->setTimeoutUS(nextUS);
++		/*
++		 * 0258: once the screen is dark nothing here needs a 30-60 Hz tick (CoreAnimation has stopped); 5 ticks a
++		 * second until iOS turns the display on again, which kicks the timer (kSweetFBRequestPowerChange).
++		 */
++		bool dark = fb->fBlackDone || (fb->fBlOK && fb->fBlPos == 0 && !fb->fBlOffFailed);
++		sender->setTimeoutUS(dark ? 200000 : nextUS);
+ 		return;
+ 	}
+ 	bool flush = fb->fDirty && (count % fb->fFlushTicks) == 0 && fb->gpuGateOpen(mach_absolute_time());
+@@ -3627,6 +3633,10 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
  				fFB->fDirty = true;     /* on: redraw the latest frame */
  			}
  			IOLockUnlock(fFB->fLock);
 +			__atomic_store_n(&sweet_display_off, off ? 1 : 0, __ATOMIC_RELEASE);   /* 0258 */
++			if (!off && fFB->fVsync != NULL) {
++				fFB->fVsync->setTimeoutUS(1);   /* 0258: the dark tick is 200 ms; show the new frame now */
++			}
  			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
  		}
  		break;
