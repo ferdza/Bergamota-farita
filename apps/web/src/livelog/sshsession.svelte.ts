@@ -3,6 +3,7 @@
 
 import { log } from "./logsession.svelte.ts";
 import { SshClient, SshError, type SshChannel } from "../lib/ssh.ts";
+import { planZip } from "../lib/zipinstall.ts";
 import { decodeConsoleRing, READ_RING_CMD, RING_BLOCKS } from "../lib/consolering.ts";
 import { parseOpenSshKey, publicLine, SshKeyError, type Ed25519Key } from "../lib/sshkey.ts";
 
@@ -152,6 +153,65 @@ class SshSession {
     } catch (e) {
       this.error = explain(e as Error);
     } finally {
+      this.busy = null;
+    }
+  }
+
+  /**
+   * A .zip laid out as phone paths (e.g. chlorophyll-ios18.zip from the Chlorophyll CI): every file under usr/local, var/root or
+   * var/mobile is written there (Mach-O 755, else 644), one atomic upload each; anything else in the zip is skipped and listed.
+   */
+  async installZip(file: File) {
+    if (!this.client) return;
+    this.busy = `Unpacking ${file.name}…`;
+    this.output = null;
+    this.cancel = new AbortController();
+    const done: string[] = [];
+    try {
+      const { unzipSync } = await import("fflate");
+      const plan = planZip(unzipSync(new Uint8Array(await file.arrayBuffer())));
+      if (!plan.install.length) throw new SshError(`nothing to install in ${file.name} (skipped: ${plan.skipped.join(", ") || "empty zip"})`);
+      const total = plan.install.reduce((n, f) => n + f.data.length, 0);
+      let sent = 0;
+      for (const [i, f] of plan.install.entries()) {
+        if (this.cancel.signal.aborted) throw new SshError(`stopped after ${done.length} of ${plan.install.length} files`);
+        this.busy = `Installing ${i + 1}/${plan.install.length}: ${f.path} (${Math.round(f.data.length / 1024)} KB), ${Math.round((sent / total) * 100)} % done`;
+        await this.upload(f.path, f.data, f.mode);
+        sent += f.data.length;
+        done.push(`${f.mode} ${f.path}`);
+      }
+      this.output =
+        `${file.name}: ${done.length} files installed (${(total / 1048576).toFixed(1)} MB)\n` +
+        done.join("\n") +
+        (plan.skipped.length ? `\nskipped (not under ${["usr/local", "var/root", "var/mobile"].join(", ")}): ${plan.skipped.join(", ")}` : "");
+    } catch (e) {
+      this.error = explain(e as Error);
+      if (done.length) this.output = `installed before the error:\n${done.join("\n")}`;
+    } finally {
+      this.cancel = null;
+      this.busy = null;
+    }
+  }
+
+  /** A command whose output streams into the log box (GPU tests); Stop ends it, Download .txt keeps it. */
+  async runStreamed(title: string, cmd: string) {
+    if (!this.client) return;
+    const t0 = Date.now();
+    this.klog = "";
+    this.klogHead = `# ${title}, ${new Date().toLocaleString()}: ${cmd}`;
+    const tick = setInterval(() => (this.busy = `${title}: ${Math.round((Date.now() - t0) / 1000)} s`), 500);
+    this.busy = `${title}…`;
+    const dec = new TextDecoder();
+    try {
+      const r = await this.run(`export PATH=$PATH:/usr/local/bin:/usr/sbin:/sbin; ${cmd} 2>&1`, (b) => (this.klog += dec.decode(b, { stream: true }).replace(/\r/g, "")), true);
+      this.klog = r.text;
+      const how = r.stopped ? "stopped by you" : r.signal ? `killed by SIG${r.signal}` : `exit ${r.code}`;
+      this.klogHead += ` -> ${how} after ${((Date.now() - t0) / 1000).toFixed(1)} s`;
+      this.output = `${title}: ${how}`;
+    } catch (e) {
+      this.error = explain(e as Error);
+    } finally {
+      clearInterval(tick);
       this.busy = null;
     }
   }

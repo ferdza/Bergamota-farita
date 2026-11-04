@@ -44,6 +44,7 @@
   let upFile = $state<File | null>(null);
   let upPath = $state("/var/root/");
   let upMode = $state("755");
+  let zipFile = $state<File | null>(null);
 
   const klass = (tags: number) => (tags & (1 << 4) ? "crash" : tags & 0b1111 ? "sweet" : "");
 </script>
@@ -131,6 +132,12 @@
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("normal")}>Reboot</button>
             <button class="btn ghost" onclick={() => sshs.disconnect()}>Disconnect</button>
           </div>
+          <div class="row acts2">
+            <span class="muted">GPU tests (after installing chlorophyll-ios18.zip):</span>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("tu_smoke", "cd /var/root/turnip-test && ./tu_smoke")}>tu_smoke</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("chl_test", "cd /var/root/chl-test && ./chl_test bg_kernels.metallib bg_render.metallib")}>chl_test</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("GPU state", "ioreg -l -c SweetAdreno630 2>/dev/null | head -40 || echo no ioreg; ls -l /dev/sweetgpu* 2>&1")}>GPU state</button>
+          </div>
           {#if sshs.busy}
             <div class="busy">
               <p class="muted">{sshs.busy}</p>
@@ -155,6 +162,14 @@
               <input class="path" bind:value={upPath} spellcheck="false" aria-label="Destination path on the phone" />
               <input class="mode" bind:value={upMode} spellcheck="false" aria-label="File mode" />
               <button class="btn" disabled={!upFile || !!sshs.busy || upPath.endsWith("/")} onclick={() => upFile && sshs.uploadPicked(upFile, upPath, upMode)}>Send</button>
+            </div>
+          </details>
+          <details class="up">
+            <summary>Install a .zip (e.g. chlorophyll-ios18.zip)</summary>
+            <p class="muted">Files go to the paths inside the zip. Only <code>usr/local</code>, <code>var/root</code> and <code>var/mobile</code> are written; anything else is skipped and listed.</p>
+            <div class="uprow">
+              <input type="file" accept=".zip,application/zip" aria-label="Zip to install" onchange={(e) => (zipFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null)} />
+              <button class="btn" disabled={!zipFile || !!sshs.busy} onclick={() => zipFile && sshs.installZip(zipFile)}>Install</button>
             </div>
           </details>
           <p class="muted">Leave iOS with these buttons, not a hard reset: they flush the disk first.</p>
