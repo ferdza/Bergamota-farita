@@ -29,6 +29,11 @@
   const unbindCmd =
     `D=$(basename "$(readlink -f /sys/class/net/$(ip -br link | awk 'tolower($3)=="02:00:5e:77:ee:01"{print $1}')/device)")\necho -n "$D" | sudo tee /sys/bus/usb/drivers/cdc_ether/unbind`;
 
+  // send any file to the phone (firmware, test tools)
+  let upFile = $state<File | null>(null);
+  let upPath = $state("/var/root/");
+  let upMode = $state("755");
+
   const klass = (tags: number) => (tags & (1 << 4) ? "crash" : tags & 0b1111 ? "sweet" : "");
 </script>
 
@@ -109,6 +114,7 @@
           <div class="row acts2">
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()}>Full kernel log (dmesg)</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.topCpu()}>Top CPU</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.installTools()}>Install tools (sweetlog…)</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("fastboot")}>Reboot to fastboot</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("normal")}>Reboot</button>
             <button class="btn ghost" onclick={() => sshs.disconnect()}>Disconnect</button>
@@ -116,6 +122,15 @@
           {#if sshs.busy}<p class="muted">{sshs.busy}</p>{/if}
           {#if sshs.error}<p class="problem">{sshs.error}</p>{/if}
           {#if sshs.output}<pre class="out">{sshs.output}</pre>{/if}
+          <details class="up">
+            <summary>Send a file to the phone</summary>
+            <div class="uprow">
+              <input type="file" aria-label="File to send" onchange={(e) => { upFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null; if (upFile && upPath.endsWith("/")) upPath += upFile.name; }} />
+              <input class="path" bind:value={upPath} spellcheck="false" aria-label="Destination path on the phone" />
+              <input class="mode" bind:value={upMode} spellcheck="false" aria-label="File mode" />
+              <button class="btn" disabled={!upFile || !!sshs.busy || upPath.endsWith("/")} onclick={() => upFile && sshs.uploadPicked(upFile, upPath, upMode)}>Send</button>
+            </div>
+          </details>
           <p class="muted">Leave iOS with these buttons, not a hard reset: they flush the disk first.</p>
           <Terminal />
         {/if}
@@ -201,6 +216,10 @@
   .pub { word-break: break-all; font-size: 11.5px; }
   .acts2 { display: flex; gap: 10px; flex-wrap: wrap; }
   .ok { color: var(--leaf); font-weight: 700; margin: 0; }
+  .up summary { cursor: pointer; font-weight: 700; font-size: 14px; }
+  .uprow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  .uprow .path { flex: 1; min-width: 220px; font: 500 13px var(--mono); padding: 8px 10px; border: 2px solid var(--ink); border-radius: 6px; }
+  .uprow .mode { width: 64px; font: 500 13px var(--mono); padding: 8px 10px; border: 2px solid var(--ink); border-radius: 6px; }
   .out { background: var(--ink); color: #e8e6dc; font: 400 12px/1.5 var(--mono); padding: 12px 14px; border-radius: 6px; overflow-x: auto; margin: 0; max-height: 40vh; }
   .note { font-size: 13px; color: var(--ink-soft); margin: 0; }
   .problem { background: #fdecea; color: #6b1d0c; padding: 12px 16px; border-radius: 6px; margin: 0; }

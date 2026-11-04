@@ -93,16 +93,68 @@ class SshSession {
     return { text: dec.decode(r.stdout) + (r.stderr.length ? dec.decode(r.stderr) : ""), code: r.code };
   }
 
-  /** Fetches the kernel's whole message buffer and puts it before the live log. */
+  /** Writes a file on the phone: streamed over SSH stdin to a temporary name, then renamed (atomic). */
+  async upload(path: string, data: Uint8Array, mode = "755") {
+    if (!/^\/[A-Za-z0-9._/+-]+$/.test(path) || !/^[0-7]{3,4}$/.test(mode)) throw new SshError(`refusing odd path or mode: ${path} ${mode}`);
+    const dir = path.slice(0, path.lastIndexOf("/")) || "/";
+    const r = await this.client!.run(
+      `export PATH=$PATH:/usr/local/bin:/usr/sbin:/sbin; mkdir -p '${dir}' && cat > '${path}.part' && chmod ${mode} '${path}.part' && mv -f '${path}.part' '${path}' && wc -c < '${path}'`,
+      data,
+    );
+    const got = parseInt(new TextDecoder().decode(r.stdout).trim(), 10);
+    if (r.code !== 0 || got !== data.length) throw new SshError(`upload of ${path} failed (${got} of ${data.length} bytes, code ${r.code})`);
+  }
+
+  /** The berga-tools the web-patched root leaves out (sweetlog: the unified log, kernel lines since boot). */
+  async installTools() {
+    if (!this.client) return;
+    this.busy = "Fetching the tools bundle…";
+    try {
+      const r = await fetch(import.meta.env.BASE_URL + "tools/berga-tools.zip");
+      if (!r.ok) throw new SshError(`this site has no tools bundle (${r.status})`);
+      const { unzipSync } = await import("fflate");
+      const files = unzipSync(new Uint8Array(await r.arrayBuffer()));
+      const names = ["sweetlog", "sweetmetrics", "sweetshot", "sweetsample", "sweettouch", "sweetprefs"];
+      const done: string[] = [];
+      for (const n of names) {
+        const data = files[`sweetnet/ios18/${n}`];
+        if (!data) continue;
+        this.busy = `Installing ${n} (${Math.round(data.length / 1024)} KB)…`;
+        await this.upload(`/usr/local/bin/${n}`, data);
+        done.push(n);
+      }
+      this.output = `installed in /usr/local/bin: ${done.join(", ") || "nothing"}`;
+    } catch (e) {
+      this.error = explain(e as Error);
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  /** Any file from this computer to a path on the phone (firmware, test tools…). */
+  async uploadPicked(file: File, path: string, mode: string) {
+    this.busy = `Sending ${file.name} (${Math.round(file.size / 1024)} KB)…`;
+    try {
+      await this.upload(path, new Uint8Array(await file.arrayBuffer()), mode);
+      this.output = `${file.name} -> ${path} (${file.size} bytes, mode ${mode})`;
+    } catch (e) {
+      this.error = explain(e as Error);
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  /** Kernel lines since boot (sweetlog reads the unified log), else the kernel buffer; put before the live log. */
   async fetchKernelLog() {
     this.busy = "Reading the kernel log…";
     try {
       // the SSH shell's PATH is minimal and this root may ship neither dmesg nor sysctl on it
       const cmd = [
         "export PATH=$PATH:/usr/sbin:/sbin:/usr/local/bin",
-        "if command -v dmesg >/dev/null 2>&1; then dmesg",
+        "if [ -x /usr/local/bin/sweetlog ]; then /usr/local/bin/sweetlog 86400 kernel",
+        "elif command -v dmesg >/dev/null 2>&1; then dmesg",
         "elif command -v sysctl >/dev/null 2>&1; then sysctl -n kern.msgbuf",
-        `else echo 'no dmesg or sysctl on this root'; echo "PATH=$PATH"; ls /usr/sbin /sbin /usr/local/bin 2>/dev/null | tr '\\n' ' '; fi`,
+        `else echo 'no sweetlog, dmesg or sysctl on this root: press "Install tools" first'; echo "PATH=$PATH"; ls /usr/sbin /sbin /usr/local/bin 2>/dev/null | tr '\\n' ' '; fi`,
       ].join("; ");
       const { text } = await this.run(cmd);
       log.prependHistory(text, "kernel buffer at " + new Date().toLocaleTimeString());
