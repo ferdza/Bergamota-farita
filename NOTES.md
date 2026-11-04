@@ -264,6 +264,16 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     boot was gpu5 (cause still unknown; needs its early SWEET GPU/TS lines). sweetlog over web
     SSH works (159 lines in 232 s for a 30 min window: slow but usable). WLED fade: "WLED is off or
     at 0; pixel fallback" (6T is AMOLED), harmless.
+  - **zc2 WORKS (device, 2026-11-04 05:43, live log):** `sweetfb_zc=1 sweetfb_smmuadopt=1` (0254, CI 41776842906):
+    stats `mode=zc smmu=identity` (fSmmuA=5 is only set when sweet_smmu_adopt_sid moved both MDP streams to
+    identity cb 3), `first zero-copy scanout: surface 3 at 0xb0404000 stride 4608`, zc_frames 11 -> 844 over
+    150 s with copy_frames 2, low pool 1372-2058/16128 pages, 0 fell back; display on/off cycles fine, touch
+    fine. The `SWEET SMMU: summary` line is cut by the log line length before the adopt notes (it only shows
+    the probe-time s2cr 0x0 cb 0): split it in a later kernel. Visual check of the screen: ask the user.
+  - **Kernel-log button bug (fixed in web, this commit):** sweetlog 1800 walked into the PREVIOUS boot and was
+    killed (no exit-status => "exit null", output cut mid-line) before reaching the current one. Now: window =
+    launchd age (`ps -o etime= -p 1`) + 300 s, and SSH exit-signal is reported. A `positionWithTimeIntervalSinceLatestBoot:`
+    mode in sweetlog.m would be cleaner but needs the macOS tools build.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,

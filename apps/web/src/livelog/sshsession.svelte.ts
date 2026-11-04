@@ -86,11 +86,17 @@ class SshSession {
   }
 
   /** One command; stdout as text (stderr appended), throws if SSH is not up. */
-  async run(command: string): Promise<{ text: string; code: number | null }> {
+  async run(command: string): Promise<{ text: string; code: number | null; signal: string | null }> {
     if (!this.client) throw new SshError("SSH is not connected");
     const r = await this.client.run(command);
     const dec = new TextDecoder();
-    return { text: dec.decode(r.stdout) + (r.stderr.length ? dec.decode(r.stderr) : ""), code: r.code };
+    return { text: dec.decode(r.stdout) + (r.stderr.length ? dec.decode(r.stderr) : ""), code: r.code, signal: r.signal };
+  }
+
+  /** Seconds since the phone booted: the age of launchd (pid 1), from ps; null if ps is missing. */
+  async uptime(): Promise<number | null> {
+    const { text } = await this.run("ps -o etime= -p 1 2>/dev/null");
+    return parseEtime(text.trim());
   }
 
   /** Writes a file on the phone: streamed over SSH stdin to a temporary name, then renamed (atomic). */
@@ -149,19 +155,25 @@ class SshSession {
     this.busy = "Reading the kernel log…";
     try {
       // the SSH shell's PATH is minimal and this root may ship neither dmesg nor sysctl on it
+      // sweetlog walks the unified log from a wall-clock date: a fixed 30 min reached into the previous boot
+      // and was killed (jetsam or the watchdog) before it got to this one. Ask for this boot only, from the
+      // age of launchd, plus a margin for the clock the RTC offset moves at boot.
+      const up = await this.uptime().catch(() => null);
+      const secs = up === null ? 900 : Math.min(up + 300, 7200);
       const cmd = [
         "export PATH=$PATH:/usr/sbin:/sbin:/usr/local/bin",
-        // a day of the unified log is far too slow to walk: the last 30 min, only our kernel subsystems
-        "if [ -x /usr/local/bin/sweetlog ]; then /usr/local/bin/sweetlog 1800 'SWEET GPU' 'SWEET SMMU' 'SWEET TS' 'SWEET TOUCH' 'SWEET RPMH' 'SWEET FB' 2>&1",
+        `if [ -x /usr/local/bin/sweetlog ]; then /usr/local/bin/sweetlog ${secs} 'SWEET GPU' 'SWEET SMMU' 'SWEET TS' 'SWEET TOUCH' 'SWEET RPMH' 'SWEET FB' 2>&1`,
         "elif command -v dmesg >/dev/null 2>&1; then dmesg",
         "elif command -v sysctl >/dev/null 2>&1; then sysctl -n kern.msgbuf",
         `else echo 'no sweetlog, dmesg or sysctl on this root: press "Install tools" first'; echo "PATH=$PATH"; ls /usr/sbin /sbin /usr/local/bin 2>/dev/null | tr '\\n' ' '; fi`,
       ].join("; ");
       const t0 = Date.now();
-      const { text, code } = await this.run(cmd);
-      log.prependHistory(text, "kernel buffer at " + new Date().toLocaleTimeString());
+      const { text, code, signal } = await this.run(cmd);
+      const head = `kernel log, phone up ${up === null ? "?" : fmtSecs(up)}, last ${fmtSecs(secs)}` + (signal ? `, CUT: sweetlog killed (${signal})` : "");
+      log.prependHistory(text, head + " at " + new Date().toLocaleTimeString());
       const n = text.split("\n").filter((l) => l.trim()).length;
-      this.output = `kernel log: ${n} lines in ${((Date.now() - t0) / 1000).toFixed(1)} s (exit ${code}), put before the live log` + (n ? "" : `\n${text || "(no output)"}`);
+      const how = signal ? `killed by SIG${signal} (the end is missing)` : `exit ${code}`;
+      this.output = `kernel log: ${n} lines in ${((Date.now() - t0) / 1000).toFixed(1)} s (${how}; phone up ${up === null ? "?" : fmtSecs(up)}), put before the live log` + (n ? "" : `\n${text || "(no output)"}`);
     } catch (e) {
       this.error = explain(e as Error);
     } finally {
@@ -208,6 +220,17 @@ class SshSession {
     if (!(await ch.shell())) throw new SshError("the phone refused a shell");
     return ch;
   }
+}
+
+/** ps etime: [[dd-]hh:]mm:ss -> seconds. */
+export function parseEtime(t: string): number | null {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(t);
+  if (!m) return null;
+  return ((+(m[1] ?? 0) * 24 + +(m[2] ?? 0)) * 60 + +m[3]) * 60 + +m[4];
+}
+
+function fmtSecs(s: number): string {
+  return s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
 }
 
 function explain(e: Error): string {

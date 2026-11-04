@@ -170,6 +170,8 @@ export class SshChannel {
   onstderr: (b: Uint8Array) => void = () => {};
   onclose: () => void = () => {};
   exitCode: number | null = null;
+  /** Set when the command was killed (exit-signal: "KILL", "SEGV"...) instead of exiting. */
+  exitSignal: string | null = null;
   remoteId = 0;
   closed = false;
   eofSent = false;
@@ -223,6 +225,7 @@ export class SshChannel {
         const name = r.str();
         const want = r.bool();
         if (name === "exit-status") this.exitCode = r.u32();
+        else if (name === "exit-signal") this.exitSignal = r.str();
         if (want) this.ssh.send(new W().u8(MSG.CHANNEL_FAILURE).u32(this.remoteId).out());
         break;
       }
@@ -612,7 +615,10 @@ export class SshClient {
   }
 
   /** Runs one command; resolves with its stdout, stderr and exit code. */
-  async run(command: string, stdin?: Uint8Array): Promise<{ stdout: Uint8Array; stderr: Uint8Array; code: number | null }> {
+  async run(
+    command: string,
+    stdin?: Uint8Array,
+  ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; code: number | null; signal: string | null }> {
     const c = await this.openSession();
     const out: Uint8Array[] = [], err: Uint8Array[] = [];
     c.ondata = (b) => out.push(b);
@@ -621,7 +627,7 @@ export class SshClient {
     if (stdin) await c.write(stdin);
     c.eof();
     const code = await c.done;
-    return { stdout: concat(...out), stderr: concat(...err), code };
+    return { stdout: concat(...out), stderr: concat(...err), code, signal: c.exitSignal };
   }
 
   dropChannel(c: SshChannel) {
