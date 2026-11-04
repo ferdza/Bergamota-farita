@@ -338,6 +338,44 @@ class SshSession {
     await this.runStreamed(`Remove ${app}`, `/usr/local/bin/sweetuicache -u '/Applications/${app}'; rm -rf '/Applications/${app}' && echo removed '/Applications/${app}'`);
   }
 
+  /**
+   * The crash loops that keep ReportCrash at 100-150 % CPU (seen on beryllium and fajita: the speech/AU extensions abort
+   * at launch, MessagesBlastDoorService asserts, bluetoothd faults without a Bluetooth port). As the ios26 branch did,
+   * with the user's OK: the five on-demand executables are parked in /var/root/disabled-bin (README = where each came
+   * from) and bluetoothd is disabled in launchd (next boot). "Restore" puts everything back.
+   */
+  async quietCrashLoops() {
+    await this.runStreamed(
+      "Quiet crash loops",
+      [
+        "export PATH=$PATH:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin",
+        "D=/var/root/disabled-bin; L=$D/README; mkdir -p $D; touch $L",
+        "for n in SiriAUSP MauiAUSP MacinTalkAUSP KonaSynthesizer MessagesBlastDoorService; do",
+        "  for p in $(find /System/Library /usr/libexec /Applications -type f -name \"$n\" 2>/dev/null); do",
+        "    d=$D/$(echo \"$p\" | tr / _)",
+        "    [ -e \"$d\" ] && continue",
+        "    mv \"$p\" \"$d\" && echo \"$d $p\" >> $L && echo \"parked $p\"",
+        "  done",
+        "done",
+        "if command -v launchctl >/dev/null 2>&1; then launchctl disable system/com.apple.bluetoothd && echo 'bluetoothd disabled (from the next boot)'; else echo 'no launchctl on this root: bluetoothd left as it is'; fi",
+        "echo; echo 'parked so far:'; cat $L",
+      ].join("\n"),
+    );
+  }
+
+  async restoreCrashLoops() {
+    await this.runStreamed(
+      "Restore parked binaries",
+      [
+        "export PATH=$PATH:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin",
+        "L=/var/root/disabled-bin/README",
+        "[ -s $L ] && while read d p; do [ -e \"$d\" ] && mv \"$d\" \"$p\" && echo \"restored $p\"; done < $L; : > $L",
+        "command -v launchctl >/dev/null 2>&1 && launchctl enable system/com.apple.bluetoothd && echo 'bluetoothd enabled (from the next boot)'",
+        "true",
+      ].join("\n"),
+    );
+  }
+
   /** A command whose output streams into the log box (GPU tests); Stop ends it, Download .txt keeps it. */
   async runStreamed(title: string, cmd: string) {
     if (!this.client) return;

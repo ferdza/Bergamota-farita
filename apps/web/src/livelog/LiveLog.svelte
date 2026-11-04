@@ -131,6 +131,8 @@
             <button class="btn leaf" disabled={!!sshs.busy} onclick={() => sshs.bootConsole()}>Boot console (fast)</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()}>Full kernel log (sweetlog, slow)</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.topCpu()}>Top CPU</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => confirm("Park the crash-looping speech/Messages helpers in /var/root/disabled-bin and disable bluetoothd (reversible with Restore)?") && sshs.quietCrashLoops()}>Quiet crash loops</button>
+            <button class="btn ghost" disabled={!!sshs.busy} onclick={() => sshs.restoreCrashLoops()}>Restore</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.installTools()}>Install tools (sweetlog…)</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("fastboot")}>Reboot to fastboot</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("normal")}>Reboot</button>
