@@ -322,6 +322,13 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     computer's own ssh/ping to 192.168.7.2 does not exist; the page's SSH does. Images with it: `*-link.img`.
     Kernel CI 41816385023 (attempt 2; attempt 1 died on a BearSSL 502) -> xnu/out-fajita7 (0254+0255+0256). Images
     (gitignored): research/ios18/enxerto-boot-ios18-fajita-{zc2,gpu5,gpu7,gpu8,gpu8-safe}-link.img. NOT booted yet.
+  - **First boot on the Bergamota link from the tablet (log 11:09, a non-zc -link image):** works: config desc
+    len 32 (raw), configd puts 192.168.7.2 on ue0, the page gets the log, touch S3706B fine. But the log starts
+    ~15 s into the boot (backboardd HID lines): before the page answers ARP the stack holds one packet and drops
+    the rest, and Android configures the device at plug-in, so all early lines (SWEET GPU included: 0 here) are
+    lost. -> xnu-11215 **0257**: ud_log_thread also binds UDP 5141; a datagram "REPLAY" sets the read position to
+    0 (sweet_log_copy clamps to the oldest byte of the 4 MiB ring) = the whole boot resent. Web: sent 700 ms
+    after connect + button "Log since boot". No SSH needed (user has no private key on the tablet). CI 41819228726.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
