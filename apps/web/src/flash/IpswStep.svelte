@@ -42,7 +42,7 @@
     </p>
   {/if}
 
-  <p class="muted" style="margin-top: 20px">Patching needs about 20 GB of free disk space for this browser. The finished root image stays in the browser's private storage until you flash it.</p>
+  <p class="muted" style="margin-top: 20px">Patching needs free disk space for this browser: about 17 GB for iOS 18, 22 GB for iOS 26 (Chrome's limit follows the free space of the disk holding your browser profile). The finished root image stays in the browser's private storage until you flash it.</p>
   <div class="row">
     <button class="btn leaf" disabled={!found?.profile} onclick={() => session.go("Patch")}>Patch it</button>
   </div>

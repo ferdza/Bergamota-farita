@@ -81,7 +81,7 @@
         <li>A OnePlus 6T (<code>sdm845</code>) or Poco F1 (<code>beryllium</code>) with an unlocked bootloader</li>
         <li>Chrome or Edge on a desktop computer, any OS</li>
         <li>The IPSW from Apple, downloaded by you</li>
-        <li>About 20 GB of free disk space</li>
+        <li>About 17 GB of free disk space (iOS 18), where your browser keeps its data</li>
       </ul>
       <p class="fine">Nothing from Apple or Qualcomm is hosted here. Your IPSW and your images are read on your computer and never uploaded.</p>
       <a class="btn" href="{base}flash/">Open the flasher</a>

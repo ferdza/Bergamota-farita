@@ -1,6 +1,9 @@
 <script lang="ts">
   import { session, PATCH_STAGES } from "./session.svelte.ts";
-  import { patcherSupported, NEEDED_BYTES, sshKeyProblem } from "../patcher/patcher.ts";
+  import { patcherSupported, neededBytes, sshKeyProblem } from "../patcher/patcher.ts";
+  import { profileForIpsw } from "../lib/profiles.ts";
+
+  const need = $derived(Math.round(neededBytes(session.ipsw ? profileForIpsw(session.ipsw.name).profile?.id : null) / 2 ** 30));
   import { fmtBytes, fmtDuration } from "../lib/flasher.ts";
 
   const supported = patcherSupported();
@@ -23,7 +26,7 @@
     <div class="row"><button class="btn leaf" onclick={() => session.setPath("image")}>Flash an image I built</button></div>
   {:else if session.patchState === "idle"}
     <h2 id="patch-title">Patch the IPSW in this page.</h2>
-    <p>The IPSW is read from your disk, decrypted, rewritten for the Snapdragon 845 (a processor without pointer authentication) and written as a root image into this browser's private storage (about {Math.round(NEEDED_BYTES / 2 ** 30)} GB). Nothing leaves your computer; the only request is for the decryption key Apple publishes.</p>
+    <p>The IPSW is read from your disk, decrypted, rewritten for the Snapdragon 845 (a processor without pointer authentication) and written as a root image into this browser's private storage (about {need} GB). Nothing leaves your computer; the only download is Apple's decryption key (on a static host like GitHub Pages you fetch it yourself with one click when asked).</p>
     <ol class="stages">
       {#each PATCH_STAGES as [, text]}<li>{text}</li>{/each}
     </ol>
@@ -37,6 +40,25 @@
       <button class="btn leaf" disabled={!!keyProblem} onclick={() => session.startPatch()}>Start patching</button>
       <button class="btn ghost" onclick={() => session.setPath("image")}>Flash an image I built</button>
     </div>
+  {:else if session.patchState === "running" && session.keysNeeded.length}
+    <h2 id="patch-title">One click needed: Apple's decryption key.</h2>
+    <p>iOS 18's disk images are encrypted with a key Apple publishes. This site is static (GitHub Pages), so it can't fetch it for you: your browser can. Open each link — Chrome downloads (or shows) a small key file from Apple — then drop that file below, or paste its text. Nothing is uploaded.</p>
+    <ol class="keys">
+      {#each session.keysNeeded as url, i}
+        <li class:ok={!!session.keysGot[url]}>
+          <a class="btn ghost" href={url} target="_blank" rel="noopener">Open key {i + 1} from Apple</a>
+          {#if session.keysGot[url]}
+            <span class="got">✓ key {i + 1} received</span>
+          {:else}
+            <input type="file" aria-label={`Key file ${i + 1}`} onchange={async (e) => { const f = (e.currentTarget as HTMLInputElement).files?.[0]; if (f) session.provideKey(url, await f.text()); }} />
+            <textarea rows="2" placeholder="…or paste -----BEGIN PRIVATE KEY----- …" aria-label={`Paste key ${i + 1}`} onchange={(e) => session.provideKey(url, (e.currentTarget as HTMLTextAreaElement).value)}></textarea>
+          {/if}
+          <small class="url">{url}</small>
+        </li>
+      {/each}
+    </ol>
+    {#if session.keyError}<p class="problem" role="alert">{session.keyError}</p>{/if}
+    <div class="row"><button class="btn ghost" onclick={() => session.cancelPatch()}>Cancel</button></div>
   {:else if session.patchState === "running"}
     <h2 id="patch-title">Patching…</h2>
     <ol class="stages live">
@@ -72,6 +94,13 @@
   .key input[aria-invalid="true"] { border-color: #b3261e; }
   .key small { color: var(--ink-soft); }
   .key small.problem { color: #6b1d0c; }
+  .keys { margin: 8px 0 16px; padding-left: 22px; display: grid; gap: 14px; }
+  .keys li { display: grid; gap: 8px; }
+  .keys li.ok { color: var(--ink-soft); }
+  .keys .btn { justify-self: start; }
+  .keys textarea { font: 500 12.5px var(--mono); padding: 8px 10px; border: 2px solid var(--ink); border-radius: 4px; background: var(--white); resize: vertical; }
+  .keys .got { font-weight: 800; color: var(--leaf); }
+  .keys .url { font: 400 11.5px var(--mono); color: var(--ink-soft); overflow-wrap: anywhere; }
   .stages { margin: 6px 0 18px; padding-left: 22px; display: grid; gap: 4px; color: var(--ink-soft); }
   .live li.done { color: var(--ink); text-decoration: line-through; text-decoration-thickness: 2px; }
   .live li.now { color: var(--ink); font-weight: 800; }

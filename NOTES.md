@@ -92,6 +92,25 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     `mkadt.py --board fajita --highmem --display-scale 3 --identity d22ap`. Blocked on
     the D22AP device-tree seed research/ipsw-x/d22ap.adt (Apple artifact, out of git;
     without it the ADT has no /product). mkboot-full.sh hard-codes BOARD=beryllium.
+  - **Display confirmed (user, 2026-11-04):** the standalone fajita Enxerto shows
+    the Bergamota logo. USB + DTB + panel all work on the real OnePlus 6T.
+  - **FULL iOS 18 fajita boot image BUILT (not booted):**
+    `research/ios18/enxerto-boot-ios18-fajita.img` (18,812,928 B, gitignored) =
+    `RENEGADE_TARGET=ios18 APPLE_LOGO=0 BOARD=fajita tools/renegade/mkboot-full.sh
+    xnu/out-fajita/kernel.development.sweet enxerto/out/fajita-hi-3x.adt <out>`
+    (mkboot-full now honours BOARD, default beryllium). ADT 13452 B with /product
+    from the D22AP seed (research/ipsw-x/d22ap.adt, gitignored), extracted with
+    tools/remotezip.py (33 KB member only) from iPhone10,3 16.7.16 20H392 IPSW +
+    adt.load (needs `lzfse`). Checks: ANDROID!, fajita FDT 371561 appended,
+    payload == ramdisk, ADT compatible "D22AP iPhone10,3 oneplus,fajita …".
+    "beryllium" strings only inside the XNU payload (multi-board code).
+  - **Site on GitHub Pages had 2 blockers for the patch path, fixed:** (a) no
+    /api/fcs-key relay on a static host (Apple's key hosts send no CORS) → the
+    patch pauses and asks the user to open each Apple key URL and drop/paste the
+    PEM (session.keysNeeded/provideKey, patcher keyUrls/pemProblem); (b) storage
+    need was 22 GiB for all → per profile (ios18 17 GiB, root is 15.2 GiB).
+    User's Chrome (Flatpak) reported only 10 GB quota: Chrome sizes it from the
+    profile disk's free space; `--unlimited-quota-for-files` no longer exists.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,

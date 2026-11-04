@@ -4,7 +4,8 @@
 import { ALLOWED_PARTITIONS, FastbootDevice, FastbootError, type LogKind, type Partition } from "../lib/fastboot.ts";
 import { bootImage, checkImage, flash, identify, phoneProblems, SAFE_PIECE, type Checked, type PhoneInfo, type Progress } from "../lib/flasher.ts";
 import { blobSource, type ByteSource } from "../lib/sparse.ts";
-import { discardImage, fetchTools, NEEDED_BYTES, Patcher, sshKeyProblem, storageRoom } from "../patcher/patcher.ts";
+import { discardImage, fetchKey, fetchTools, keyUrls, neededBytes, Patcher, pemProblem, sshKeyProblem, storageRoom } from "../patcher/patcher.ts";
+import { profileForIpsw } from "../lib/profiles.ts";
 import type { BuildSummary, IpswInfo } from "../patcher/wasm.ts";
 
 export type Path = "patch" | "image";
@@ -60,6 +61,11 @@ class Session {
   patchInfo = $state.raw<IpswInfo | null>(null);
   patchSummary = $state.raw<BuildSummary | null>(null);
   private patcher: Patcher | null = null;
+  // Apple's AEA keys the user must fetch by hand when this host has no /api/fcs-key relay (GitHub Pages)
+  keysNeeded = $state<string[]>([]);
+  keysGot = $state<Record<string, string>>({});
+  keyError = $state<string | null>(null);
+  private keyWaiter: { resolve: (p: Record<string, string>) => void; reject: (e: Error) => void } | null = null;
 
   partition = $state<Partition>("userdata");
   picked = $state.raw<Picked | null>(null);
@@ -171,8 +177,16 @@ class Session {
     let lock: WakeLockSentinel | null = null;
     try {
       lock = await navigator.wakeLock?.request("screen").catch(() => null) ?? null;
-      const room = await storageRoom();
-      if (!room.ok) throw new Error(`This browser has only ${(room.free / 2 ** 30).toFixed(0)} GB of private storage left; the root image needs about ${NEEDED_BYTES / 2 ** 30} GB. Free some disk space and try again.`);
+      const room = await storageRoom(neededBytes(profileForIpsw(ipsw.name).profile?.id));
+      if (!room.ok) {
+        const gb = (n: number) => (n / 2 ** 30).toFixed(1);
+        throw new Error(
+          `This browser can use only ${gb(room.free)} GB here; the root image needs about ${gb(room.needed)} GB. ` +
+            `Chrome's limit follows the free space of the disk that holds the browser profile (no flag changes it): ` +
+            `free about ${gb(room.needed - room.free)} GB more on that disk (with Flatpak Chrome: the disk of ~/.var/app), ` +
+            `or delete old images under Advanced → Browser storage, then try again.`,
+        );
+      }
       await discardImage();
       this.patcher?.terminate();
       const p = (this.patcher = new Patcher());
@@ -191,7 +205,22 @@ class Session {
       const key = this.sshKey.trim();
       if (key && sshKeyProblem(key)) throw new Error(sshKeyProblem(key)!);
       safeSet("bergamota.sshKey", key);
-      const { file, summary } = await p.build(info, { sshKey: key }, tools ?? undefined);
+      // Apple's decryption keys: through the relay when the host has one, else from the user (see keysNeeded)
+      const pems: Record<string, string> = {};
+      const urls = keyUrls(info);
+      for (const u of urls) {
+        try {
+          pems[u] = await fetchKey(u);
+        } catch {
+          /* no relay on this host: asked below */
+        }
+      }
+      const missing = urls.filter((u) => !pems[u]);
+      if (missing.length) {
+        this.addLog("note", `no key relay on this host: waiting for ${missing.length} key file(s) from the user`);
+        Object.assign(pems, await this.waitForKeys(missing));
+      }
+      const { file, summary } = await p.build(info, { sshKey: key, pems }, tools ?? undefined);
       this.patchSummary = summary;
       this.patchState = "done";
       await this.pick(file, file.name, "browser");
@@ -207,7 +236,34 @@ class Session {
     }
   }
 
+  private waitForKeys(urls: string[]): Promise<Record<string, string>> {
+    this.keysNeeded = urls;
+    this.keysGot = {};
+    this.keyError = null;
+    return new Promise((resolve, reject) => (this.keyWaiter = { resolve, reject }));
+  }
+
+  /** The user dropped (or pasted) the key file for `url`. Resumes the patch once every key is in. */
+  provideKey(url: string, text: string) {
+    const problem = pemProblem(text);
+    if (problem) {
+      this.keyError = problem;
+      return;
+    }
+    this.keyError = null;
+    this.keysGot = { ...this.keysGot, [url]: text.trim() + "\n" };
+    if (this.keysNeeded.every((u) => this.keysGot[u])) {
+      const got = this.keysGot;
+      this.keysNeeded = [];
+      this.keyWaiter?.resolve(got);
+      this.keyWaiter = null;
+    }
+  }
+
   cancelPatch() {
+    this.keyWaiter?.reject(new Error("cancelled"));
+    this.keyWaiter = null;
+    this.keysNeeded = [];
     this.patcher?.terminate();
     this.patcher = null;
     this.patchState = "idle";

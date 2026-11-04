@@ -6,25 +6,47 @@ import type { FromWorker, ToWorker } from "./worker.ts";
 
 export type PatchEvent = Extract<FromWorker, { type: "event" }>;
 
-/** Disk the finished image and its work need in the browser's storage (the iOS 26 root is ~18 GB). */
-export const NEEDED_BYTES = 22 * 2 ** 30;
+/** Disk the finished image and its work need in the browser's storage, per profile: the iOS 18 root is
+ * 15.2 GiB (docs/IOS18_PORT.md), the iOS 26 root ~18 GiB; each gets ~2-4 GiB of margin. */
+const NEEDED: Record<string, number> = { ios18: 17 * 2 ** 30, ios26: 22 * 2 ** 30 };
+export const NEEDED_BYTES = NEEDED.ios26; // the largest, for copy that does not know the profile
+export function neededBytes(profile?: string | null): number {
+  return (profile && NEEDED[profile]) || NEEDED_BYTES;
+}
 
 export function patcherSupported(): boolean {
   return typeof Worker !== "undefined" && typeof WebAssembly !== "undefined" && typeof navigator.storage?.getDirectory === "function"; // createSyncAccessHandle exists only inside a worker
 }
 
-export async function storageRoom(): Promise<{ free: number; ok: boolean }> {
+/** Chrome sizes an origin's quota from the FREE space of the disk holding the browser profile (no flag
+ * raises it), so "not enough room" means: free space on that disk. */
+export async function storageRoom(needed = NEEDED_BYTES): Promise<{ free: number; needed: number; ok: boolean }> {
   const est = await navigator.storage.estimate();
   const free = (est.quota ?? 0) - (est.usage ?? 0);
-  return { free, ok: free >= NEEDED_BYTES };
+  return { free, needed, ok: free >= needed };
 }
 
+/** Through this site's /api/fcs-key relay (Cloudflare host only: a static host such as GitHub Pages has no
+ * relay, and Apple's key host sends no CORS headers). Callers fall back to asking the user for the key file. */
 export async function fetchKey(keyUrl: string): Promise<string> {
   const r = await fetch(`/api/fcs-key?url=${encodeURIComponent(keyUrl)}`);
   if (!r.ok) throw new Error(`Could not get the decryption key for Apple's image (${r.status}). Try again in a moment.`);
   const pem = await r.text();
-  if (!pem.includes("PRIVATE KEY")) throw new Error("The key server answered with something that is not a key.");
+  if (pemProblem(pem)) throw new Error("The key server answered with something that is not a key.");
   return pem;
+}
+
+/** The distinct key URLs an IPSW's encrypted images need. */
+export function keyUrls(info: IpswInfo): string[] {
+  return [...new Set(info.images.map((i) => i.keyUrl).filter((u): u is string => !!u))];
+}
+
+/** Checks a key the user supplied (downloaded from Apple's link); returns a problem or null. */
+export function pemProblem(text: string): string | null {
+  const t = text.trim();
+  if (!t.startsWith("-----BEGIN PRIVATE KEY-----") || !t.includes("-----END PRIVATE KEY-----")) return "That is not the key file: it should start with -----BEGIN PRIVATE KEY-----.";
+  if (t.length > 4096) return "That file is too big to be Apple's key.";
+  return null;
 }
 
 export class Patcher {

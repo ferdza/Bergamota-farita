@@ -29,7 +29,8 @@ if [ "${APPLE_LOGO:-1}" != 0 ]; then
 	python3 tools/mkapplelogo.py "${LOGO_SRC[@]}" || echo "warning: no Apple logo (Bergamota screen stays)" >&2
 fi
 python3 tools/mkpayload.py "$KERNEL" "$ADT" enxerto/out/payload-${NAME}full.bin --cmdline "$CMDLINE"
-BOARD=beryllium enxerto/build.sh "$PWD/enxerto/out/payload-${NAME}full.bin"
+# BOARD=fajita (OnePlus 6T) with DTB=dtb/fajita/dtb and a fajita ADT; default beryllium (Poco F1)
+BOARD=${BOARD:-beryllium} enxerto/build.sh "$PWD/enxerto/out/payload-${NAME}full.bin"
 cp enxerto/out/enxerto-boot.img "$OUT"
 python3 tools/unpack_bootv2.py "$OUT" enxerto/out/check-${NAME}full >/dev/null 2>&1 && cmp enxerto/out/check-${NAME}full/ramdisk enxerto/out/payload-${NAME}full.bin && echo "payload check: ramdisk == payload"
 ls -l "$OUT"
