@@ -147,6 +147,15 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     (diff generated on a reconstruction of sweet_rpmh.c = 0062 + 0104), and 0252 calls
     sweet_rpmh_vreg_set("ldoa28", 3008, true). Board selection itself was right (SE12).
     SSH: root built with an OLD key (both keys named local_aurora, fp l0N5… vs PC S9i5…).
+  - **Kernel CI 41755972488 SUCCESS** (0252+0253 applied, errors.txt empty) -> xnu/out-fajita3.
+    Image research/ios18/enxerto-boot-ios18-fajita-touch2.img (sha256 958ba834…, default
+    cmdline + `-v`), sent; touch result pending. Expect `SWEET TS: ldoa28 vote -> 0`.
+  - **Log audit (5696 lines, from launchd on):** OK = SpringBoard, 8 cores at max
+    (1.77/2.80 GHz), sweetfb 1125x2436 -> 1080x2340 hw scale 30 Hz, UFS 0 errors, ue0
+    192.168.7.2, keys, dropbear, charger sees SDP 500 mA. Issues = touch (fixed above),
+    SSH key, bluetoothd crash loop x12 (reason=1201, BT not ported), clock 1970 (0245 RTC
+    offset needs one network/`date` set), charger state=INHIBIT + no SOC line in this
+    window (6T has OnePlus Dash charging; battery capacity constant is beryllium's).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
