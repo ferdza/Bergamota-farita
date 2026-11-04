@@ -357,6 +357,13 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
       (never clean), gpu8-zc-clean3-link2 (clean only CPU-touched/unannounced frames).
     * Suspect 2 (Chlorophyll, as on beryllium 2026-10-24 "dirty regions and async commits still break drawing"):
       flags /private/var/tmp/bgmtl-bb.sync (BGMTL_SYNC) and bgmtl-bb.full (CA_DISABLE_DIRTY_REGIONS).
+  - **Flicker = frame pacing, not cache (user: zcclean=0 and bgmtl-bb.defersched + bgmtl-bb.sync changed nothing):** old/new
+    frame alternating, sometimes black. ios26 NOTES (iOS 18 on beryllium, 2026-10-24) name it: IOMFBFlipBook keeps one
+    swap in flight and recycles swap N-1's surface as soon as swap N is reported complete; scanning surfaces in place
+    (our plain zc) shows CA drawing into the surface on the panel. Their fix = direct mode + scan-out copy (0235 CPU,
+    0240/0241 GPU 2D blit, 0247): `sweetfb_direct=1 sweetfb_swapdepth=2 sweetfb_scancopy=2|1` (direct is gated on
+    sweet_board_beryllium(), true on fajita; it implies zc, so + sweetfb_smmuadopt=1). Images (gitignored):
+    gpu8-direct-scancopy2-link2.img (GPU copy) and gpu8-direct-scancopy1-link2.img (CPU copy).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
