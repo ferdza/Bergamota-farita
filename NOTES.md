@@ -184,6 +184,19 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     test/bench (TAP + dropbear 2022.83: login 75 ms, 4 MiB stdin 11.9 MiB/s). UI next:
     terminal + dmesg + reboot buttons + IPA sideload (needs a WASM single-Mach-O export:
     renegade-rs pacstrip::strip + codesign::resign).
+  - **Web SSH UI live (bae352b, b859c51):** /log SSH panel (key in memory only), xterm shell,
+    dmesg -> prepended history, Top CPU (ps), clean sweetreboot fastboot/normal. Untested on
+    the phone yet (root still has the old key; user re-flashing).
+  - **Zero-copy (user priority) — zc1 image built, NOT booted:** research/ios18/
+    enxerto-boot-ios18-fajita-zc1.img = touch3 kernel + `-v sweetfb_zc=1`. 0127 was never booted
+    on any phone. Low pool default 0xb0400000..0xc0000000 checked against fajita's fixed
+    reserved-memory (0x9fff7000+1M, param 0xac200000, ramoops 0xac300000-0xac700000, mtp
+    0xac700000-0xad200000): no overlap (all below). Kernel falls back to copying if the MDP
+    SMMU is not in bypass; protected RAM = instant reset (CrashDump). Watch `SWEET FB:` lines
+    (zero-copy armed / first scanout / counters, zc_frames in stats).
+  - **CPU:** cpufreq "load" = the BUSIEST cpu of the cluster (0190), so little 100 % = at
+    least one A55 pegged, not four. Not the touch thread (touch_wait sleeps). Find it with
+    Top CPU over SSH.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
