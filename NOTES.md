@@ -162,6 +162,12 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     id read at query+0x10 (Linux: +11). Fixed in 0252 (ae270bc): PDT-derived masks, enable
     all sources, 50 ms polling fallback, 16-bit coords, raw F12 bytes logged every 3 s.
     Kernel CI 41769717548 running.
+  - **🎉 TOUCH WORKS on fajita (user, 2026-11-04, touch2 image):** not at first; it started
+    after the phone sat ~1 h in sleep. Likely: F01 configured/irq-enable written 100 ms after
+    the F01 reset (Linux waits 200 ms), ignored by the not-ready chip; a later screen off/on
+    made it report "unconfigured" and the loop's re-init took. touch3 (0252 ae270bc: 200 ms,
+    PDT irq masks, 50 ms poll) should make it work from boot — to confirm. Keep touch2 as the
+    known-good image meanwhile. docs/FAJITA.md written (d141e99).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
