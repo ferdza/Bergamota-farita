@@ -280,6 +280,23 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     blocks of /dev/rufsroot0, size found by halving with dd, read only), decoded in the page
     (src/lib/consolering.ts, tests). This boot only, all kernel lines; newest 4 MiB (it says when it wrapped).
     sweetlog stays as "Full kernel log (slow)", now streamed into a box with Stop + Download .txt.
+  - **GPU, 2026-11-04 (no phone this session):**
+    * The gpu5 boot (05:21 log) has NO SWEET GPU and NO SWEET TS lines: its live log started at up_s 130,
+      so the stage lines and the touch start are simply missing. The touch thread did not log its 4 s
+      "raw max" either, i.e. it never started in that boot; GPU and touch share no RPMh path (GPU uses
+      only the GMU RSC/PDC; GCC 0x52004 is RMW), cause unknown. Use "Boot console (fast)" next time.
+    * Images (gitignored; ADT with OEM zap: never publish): research/ios18/enxerto-boot-ios18-fajita-
+      gpu{5,7,8}-v2.img = out-fajita5 kernel (touch3 + 0254) + /tmp/claude-0/gpufw/fajita-gpu.adt +
+      `-v sweetgpu=N ufslogsecs=1` (no zc args). Order: 5, 7, 8; stop at the first failure.
+      (A local tree in the scratchpad (bt/xnu) is NOT the full 11215 tree: its sweet_gpu.c reads
+      `adreno=`; the real driver is sweet_a630.c of 0103+, boot-arg `sweetgpu`.)
+    * **Chlorophyll CI works:** .github/workflows/chlorophyll.yml (workflow_dispatch, macos-26, Xcode 26.6,
+      iPhoneOS SDK 26.5, all targets `-miphoneos-version-min=18.0`; macos-15/Xcode 16 fails: bgmtl.m uses
+      MTLTextureViewDescriptor). Run 41813358570 = Chlorophyll d3cb665: artifact chlorophyll-ios18.zip
+      (13 MB) laid out as phone paths: usr/local/lib/bgmtl/{bgmtl-inject,libchlorophyll,libdrm.2}.dylib,
+      var/root/{turnip-test,chl-test,metal-turnip}/. Checked: all platform iOS, minos 18.0, arm64e,
+      pacstrip "no PAC code". Web: SSH panel "Install a .zip" (only usr/local, var/root, var/mobile) and
+      streamed buttons tu_smoke / chl_test / GPU state. tu_smoke needs SweetAdreno630 = a sweetgpu=8 boot.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
