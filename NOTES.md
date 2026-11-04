@@ -111,6 +111,17 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     need was 22 GiB for all → per profile (ios18 17 GiB, root is 15.2 GiB).
     User's Chrome (Flatpak) reported only 10 GB quota: Chrome sizes it from the
     profile disk's free space; `--unlimited-quota-for-files` no longer exists.
+  - **First iOS boot attempt (2026-11-04, observed):** full fajita image test-booted:
+    Bergamota logo ~30 s, black ~5 s, then **Qualcomm CrashDump** (no write, recovered).
+    ROOT CAUSE (code reading, high confidence): the kernel gates every SDM845 path on
+    sweet_board_beryllium() = ADT compatible "xiaomi,beryllium" (40 call sites, 25
+    patches) and the fajita ADT lacked it, so fajita ran the SM7150 (sweet) paths. Also:
+    0137 reboot path is beryllium-only, and OnePlus ABL arms crash-dump on reset, so any
+    reset lands in CrashDump instead of a reboot. FIX: mkadt fajita compat adds
+    xiaomi,beryllium; 0252 now picks touch_fajita BEFORE touch_beryllium (it used
+    tb->sda/scl). diag1 image (old kernel, new ADT, +`-v sweettouch=0`):
+    research/ios18/enxerto-boot-ios18-fajita-diag1.img — sent, result pending.
+    Kernel CI re-run needed for the 0252 order fix.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,

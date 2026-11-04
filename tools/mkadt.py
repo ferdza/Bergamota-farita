@@ -76,8 +76,10 @@ BOARDS = {
         # is 2246). Verified against the working iOS-16 fajita port's mkadt
         # (FB=0x9d400000/0x2400000, 1080x2340).
         fb=(0x9d400000, 0x2400000), fb_wh=(1080, 2340),
-        # keep 'xiaomi,sweet' so SweetPlatformExpert matches, as beryllium does
-        compat=['oneplus,fajita', 'xiaomi,sweet', 'qcom,sdm845'],
+        # 'xiaomi,beryllium' too: the kernel gates every SDM845 path on sweet_board_beryllium()
+        # (40 sites); without it fajita ran the SM7150 (sweet) paths and hit a Qualcomm crash
+        # dump on the first device boot (2026-11-04). 'xiaomi,sweet' keeps SweetPlatformExpert.
+        compat=['oneplus,fajita', 'xiaomi,beryllium', 'xiaomi,sweet', 'qcom,sdm845'],
         # SDM845 is identical to beryllium: 0-3 A55, 4-7 A75
         cpu_compat='qcom,kryo385', big_from=4, freqs=(1766400000, 2803200000),
         # low-bank window: start with beryllium's; RE-VERIFY against fajita's live

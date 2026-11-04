@@ -334,17 +334,19 @@ index 204207f..b50cf84 100644
  static void
  touch_thread(void *arg, wait_result_t result)
  {
-@@ -1202,6 +1462,9 @@ sweet_touch_init(void)
- 	if (sweet_board_beryllium()) {
- 		tb = &touch_beryllium;
- 		st.irq_hint = 1; /* bit-banged reads are slow: only on IRQ edges or while touched */
-+	} else if (sweet_board_fajita()) {
+@@ -1202,6 +1462,10 @@ sweet_touch_init(void)
+-	if (sweet_board_beryllium()) {
++	/* fajita first: its ADT also says xiaomi,beryllium (the SDM845 paths) */
++	if (sweet_board_fajita()) {
 +		tb = &touch_fajita;
 +		st.kind = TOUCH_RMI4;
++	} else if (sweet_board_beryllium()) {
+ 		tb = &touch_beryllium;
+ 		st.irq_hint = 1; /* bit-banged reads are slow: only on IRQ edges or while touched */
  	}
  	(void)PE_parse_boot_argn("sweettouch", &enabled, sizeof(enabled));
  	(void)PE_parse_boot_argn("sweettouchirq", &st.irq_hint, sizeof(st.irq_hint));
-@@ -1227,7 +1490,8 @@ sweet_touch_init(void)
+@@ -1227,7 +1491,8 @@ sweet_touch_init(void)
  		printf("SWEET TOUCH: disabled (sweettouch=0)\n");
  		return;
  	}
