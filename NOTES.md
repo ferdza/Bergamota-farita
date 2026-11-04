@@ -197,6 +197,20 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
   - **CPU:** cpufreq "load" = the BUSIEST cpu of the cluster (0190), so little 100 % = at
     least one A55 pegged, not four. Not the touch thread (touch_wait sleeps). Find it with
     Top CPU over SSH.
+  - **🎉 WEB SSH WORKS on the phone (log 04-47-01):** banner dropbear_2026.94, aes128-ctr /
+    hmac-sha2-256, publickey login, Top CPU output. (The earlier "closed by the phone" was
+    the old-key root, re-flashed since.) **Widgets render for the first time** (user).
+  - **CPU hog found (Top CPU):** widget extensions ~90-99 % each (BackgroundShortcutRunner,
+    StocksWidget, CalendarWidgetExtension, GCWidgets) + siriactionsd 67 %: no crash loop
+    (crash=0, 1-2 execs each): they render on the CPU (no GPU). Short term: fewer widgets;
+    long term: GPU (Adreno 630).
+  - **Zero-copy declined safely on fajita:** `smmu=translate-or-unknown`, "MDP SMMU streams
+    not verified as bypass; such frames are copied", low pool 0/0. OnePlus ABL leaves the
+    MDP SIDs (0x880/0xc80) TRANSLATING (beryllium assumption was bypass). Next: read the early
+    `SWEET SMMU: probe …` lines (dmesg over web SSH), then either map the low pool IOVA=PA
+    into ABL's MDP context bank (walk its TTBR0, add block entries, TLBI) or put the pool in
+    a region ABL already maps. Also: 0126's backlight fade drives PMI8998 WLED (Poco LCD);
+    the 6T is AMOLED (DCS brightness) — fade/off on fajita to check.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
