@@ -1,0 +1,44 @@
+From: Bergamota fajita port
+Subject: [PATCH] fajita: allow PM8998 ldoa28 (touch VDD) in the PMIC4 RPMh rail list
+
+The OnePlus 6T's Synaptics S3706 (RMI4, i2c12 @0x20) is powered by PM8998
+LDO28 (vreg_l28a_3p0, 2856..3008 mV in mainline sdm845-oneplus-common.dtsi)
+plus a gpio88 1.8 V switch. On the first device boot the fajita touch thread
+voted ldoa28 through sweet_rpmh_vreg_enable(), which is the SM7150 helper and
+only accepts ldoc11, so LDO28 stayed off and the controller NACKed:
+
+  SWEET RPMH: expected ldoc11 and 2950..3400 mV
+  SWEET TS: ldoa28 vote -> 22
+  SWEET TOUCH: probe xfer addr=0x20 ... err=6 irq=0x409   (M_GP_IRQ_1 = NACK)
+
+The SDM845 path is sweet_rpmh_vreg_set() (patch 0104: SDM845 apps_rsc DRV-2,
+PMIC4 LDO policy, an explicit allow-list). Add ldoa28 to that list; 0252's
+fajita thread now calls sweet_rpmh_vreg_set("ldoa28", 3008, true).
+
+---
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 2d88a34..ccba5d4 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -354,6 +354,12 @@ rh_send(uint32_t address, unsigned mv, bool enable)
+ static const struct { const char *res; unsigned lo, hi; } rh_wcn_rails[] = {
+ 	{ "ldoa5", 800, 800 }, { "ldoa7", 1800, 1800 }, { "ldoa17", 1304, 1304 },
+ 	{ "ldoa23", 3300, 3312 }, { "ldoa25", 3300, 3312 },
++	/*
++	 * OnePlus 6T (fajita) touch VDD: Synaptics S3706 on i2c12, vdd-supply = vreg_l28a_3p0,
++	 * 2856..3008 mV (mainline sdm845-oneplus-common.dtsi). Same PMIC4 LDO policy (HPM 7).
++	 * Without it the RMI4 controller stays unpowered and NACKs at 0x20 (first boot, 2026-11-04).
++	 */
++	{ "ldoa28", 2856, 3008 },
+ };
+ 
+ /* Read-only: RSC geometry check, cmd-db lookup, no TCS access. */
+@@ -386,7 +392,7 @@ sweet_rpmh_vreg_set(const char *res, unsigned mv, bool enable)
+ 		}
+ 	}
+ 	if (i == sizeof(rh_wcn_rails) / sizeof(rh_wcn_rails[0])) {
+-		printf("SWEET RPMH: %s %u mV is not an allowed WCN3990 rail\n", res, mv);
++		printf("SWEET RPMH: %s %u mV is not an allowed PMIC4 rail\n", res, mv);
+ 		return EINVAL;
+ 	}
+ 	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {

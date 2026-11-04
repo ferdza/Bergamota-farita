@@ -138,6 +138,15 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     research/ios18/enxerto-boot-ios18-fajita-touch.img (sha256 6051c033…, cmdline =
     mkboot-full default + `-v`), sent; touch result pending. User is re-patching the
     root with berga-tools (SSH).
+  - **Live log WORKS in the browser on Linux** (user saved a 5696-line log from /log/
+    after the udev 1209:0001 rule + cdc_ether unbind).
+  - **Touch root cause (from that log):** `SWEET RPMH: expected ldoc11 and 2950..3400 mV`
+    / `SWEET TS: ldoa28 vote -> 22` / `probe xfer addr=0x20 … err=6 irq=0x409` (NACK):
+    0252 voted PM8998 ldoa28 through the SM7150-only sweet_rpmh_vreg_enable(), so the
+    S3706 stayed unpowered. Fix: 0253 adds ldoa28 2856..3008 mV to 0104's PMIC4 allow-list
+    (diff generated on a reconstruction of sweet_rpmh.c = 0062 + 0104), and 0252 calls
+    sweet_rpmh_vreg_set("ldoa28", 3008, true). Board selection itself was right (SE12).
+    SSH: root built with an OLD key (both keys named local_aurora, fp l0N5… vs PC S9i5…).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
