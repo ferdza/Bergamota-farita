@@ -86,11 +86,29 @@ class SshSession {
   }
 
   /** One command; stdout as text (stderr appended), throws if SSH is not up. */
-  async run(command: string): Promise<{ text: string; code: number | null; signal: string | null }> {
+  async run(
+    command: string,
+    onData?: (b: Uint8Array) => void,
+    pty = false,
+  ): Promise<{ text: string; code: number | null; signal: string | null; stopped: boolean }> {
     if (!this.client) throw new SshError("SSH is not connected");
-    const r = await this.client.run(command);
-    const dec = new TextDecoder();
-    return { text: dec.decode(r.stdout) + (r.stderr.length ? dec.decode(r.stderr) : ""), code: r.code, signal: r.signal };
+    this.cancel = new AbortController();
+    try {
+      const r = await this.client.run(command, undefined, { onData, signal: this.cancel.signal, pty });
+      const dec = new TextDecoder();
+      let text = dec.decode(r.stdout) + (r.stderr.length ? dec.decode(r.stderr) : "");
+      if (pty) text = text.replace(/\r\n/g, "\n");
+      return { text, code: r.code, signal: r.signal, stopped: r.stopped };
+    } finally {
+      this.cancel = null;
+    }
+  }
+
+  /** Set while a command runs: the Stop button aborts it (the phone side is closed, what came is kept). */
+  cancel = $state<AbortController | null>(null);
+
+  stop() {
+    this.cancel?.abort();
   }
 
   /** Seconds since the phone booted: the age of launchd (pid 1), from ps; null if ps is missing. */
@@ -152,7 +170,8 @@ class SshSession {
 
   /** Kernel lines since boot (sweetlog reads the unified log), else the kernel buffer; put before the live log. */
   async fetchKernelLog() {
-    this.busy = "Reading the kernel log…";
+    this.busy = "Asking the phone how long it has been up…";
+    this.output = null;
     try {
       // the SSH shell's PATH is minimal and this root may ship neither dmesg nor sysctl on it
       // sweetlog walks the unified log from a wall-clock date: a fixed 30 min reached into the previous boot
@@ -168,11 +187,33 @@ class SshSession {
         `else echo 'no sweetlog, dmesg or sysctl on this root: press "Install tools" first'; echo "PATH=$PATH"; ls /usr/sbin /sbin /usr/local/bin 2>/dev/null | tr '\\n' ' '; fi`,
       ].join("; ");
       const t0 = Date.now();
-      const { text, code, signal } = await this.run(cmd);
-      const head = `kernel log, phone up ${up === null ? "?" : fmtSecs(up)}, last ${fmtSecs(secs)}` + (signal ? `, CUT: sweetlog killed (${signal})` : "");
-      log.prependHistory(text, head + " at " + new Date().toLocaleTimeString());
+      let lines = 0;
+      let last = "";
+      const show = () => {
+        const sec = Math.round((Date.now() - t0) / 1000);
+        this.busy = `Reading the kernel log (this boot, last ${fmtSecs(secs)}): ${lines} lines so far, ${sec} s` +
+          (last ? `\nlatest: ${last.slice(0, 160)}` : "\n(sweetlog prints nothing until it reaches the window; can take a minute)");
+      };
+      show();
+      const tick = setInterval(show, 1000);
+      const dec = new TextDecoder();
+      let r;
+      try {
+        r = await this.run(cmd, (b) => {
+          const t = dec.decode(b, { stream: true });
+          lines += (t.match(/\n/g) ?? []).length;
+          const ls = t.split("\n").filter((l) => l.trim());
+          if (ls.length) last = ls[ls.length - 1].replace(/\r$/, "");
+        }, true);
+      } finally {
+        clearInterval(tick);
+      }
+      const { text, code, signal, stopped } = r;
+      const cut = stopped ? "STOPPED by you" : signal ? `CUT: sweetlog killed (${signal})` : "";
+      const head = `kernel log, phone up ${up === null ? "?" : fmtSecs(up)}, last ${fmtSecs(secs)}` + (cut ? `, ${cut}` : "");
+      if (text.trim()) log.prependHistory(text, head + " at " + new Date().toLocaleTimeString());
       const n = text.split("\n").filter((l) => l.trim()).length;
-      const how = signal ? `killed by SIG${signal} (the end is missing)` : `exit ${code}`;
+      const how = stopped ? "stopped, what came is kept" : signal ? `killed by SIG${signal} (the end is missing)` : `exit ${code}`;
       this.output = `kernel log: ${n} lines in ${((Date.now() - t0) / 1000).toFixed(1)} s (${how}; phone up ${up === null ? "?" : fmtSecs(up)}), put before the live log` + (n ? "" : `\n${text || "(no output)"}`);
     } catch (e) {
       this.error = explain(e as Error);

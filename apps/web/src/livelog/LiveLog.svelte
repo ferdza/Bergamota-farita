@@ -119,7 +119,12 @@
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("normal")}>Reboot</button>
             <button class="btn ghost" onclick={() => sshs.disconnect()}>Disconnect</button>
           </div>
-          {#if sshs.busy}<p class="muted">{sshs.busy}</p>{/if}
+          {#if sshs.busy}
+            <div class="busy">
+              <p class="muted">{sshs.busy}</p>
+              {#if sshs.cancel}<button class="btn" onclick={() => sshs.stop()}>Stop</button>{/if}
+            </div>
+          {/if}
           {#if sshs.error}<p class="problem">{sshs.error}</p>{/if}
           {#if sshs.output}<pre class="out">{sshs.output}</pre>{/if}
           <details class="up">
@@ -167,6 +172,8 @@
 </div>
 
 <style>
+  .busy { display: flex; gap: 12px; align-items: flex-start; }
+  .busy p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; flex: 1; font-family: ui-monospace, monospace; font-size: 12px; }
   .page { max-width: 1180px; margin: 0 auto; padding: 0 clamp(16px, 3.4vw, 48px) 48px; display: grid; gap: 16px; }
   .top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 26px 0 8px; flex-wrap: wrap; }
   .mark { display: inline-flex; align-items: center; gap: 12px; font-weight: 900; font-size: 24px; font-stretch: 112%; letter-spacing: -0.02em; text-decoration: none; }

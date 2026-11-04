@@ -614,20 +614,38 @@ export class SshClient {
     return c;
   }
 
-  /** Runs one command; resolves with its stdout, stderr and exit code. */
+  /**
+   * Runs one command; resolves with its stdout, stderr and exit code. `onData` sees the output as it streams;
+   * aborting `signal` closes the channel and resolves at once with what came so far (stopped: true).
+   */
   async run(
     command: string,
     stdin?: Uint8Array,
-  ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; code: number | null; signal: string | null }> {
+    opts: { onData?: (b: Uint8Array, stderr: boolean) => void; signal?: AbortSignal; pty?: boolean } = {},
+  ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; code: number | null; signal: string | null; stopped: boolean }> {
     const c = await this.openSession();
     const out: Uint8Array[] = [], err: Uint8Array[] = [];
-    c.ondata = (b) => out.push(b);
-    c.onstderr = (b) => err.push(b);
-    if (!(await c.exec(command))) throw new SshError(`the phone refused to run: ${command}`);
-    if (stdin) await c.write(stdin);
-    c.eof();
-    const code = await c.done;
-    return { stdout: concat(...out), stderr: concat(...err), code, signal: c.exitSignal };
+    c.ondata = (b) => (out.push(b), opts.onData?.(b, false));
+    c.onstderr = (b) => (err.push(b), opts.onData?.(b, true));
+    let stopped = false;
+    const aborted = new Promise<null>((resolve) => {
+      const stop = () => {
+        stopped = true;
+        c.close();
+        resolve(null);
+      };
+      if (opts.signal?.aborted) stop();
+      else opts.signal?.addEventListener("abort", stop, { once: true });
+    });
+    if (!stopped) {
+      // a pty makes the command's stdout line-buffered (a pipe gets it in 4 KB blocks, and loses them on a kill)
+      if (opts.pty) await c.pty(250, 50, "dumb");
+      if (!(await c.exec(command))) throw new SshError(`the phone refused to run: ${command}`);
+      if (stdin && !stopped) await c.write(stdin);
+      c.eof();
+    }
+    const code = await Promise.race([c.done, aborted]);
+    return { stdout: concat(...out), stderr: concat(...err), code, signal: c.exitSignal, stopped };
   }
 
   dropChannel(c: SshChannel) {
