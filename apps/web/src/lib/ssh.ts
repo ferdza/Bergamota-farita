@@ -294,6 +294,8 @@ type Waiter = { types: number[]; resolve: (m: { type: number; r: R; raw: Uint8Ar
 export class SshClient {
   serverId = "";
   hostFingerprint = "";
+  /** How far the handshake got: shown when the phone closes the connection early. */
+  stage = "start";
   onclose: (err?: Error) => void = () => {};
   closed = false;
 
@@ -338,7 +340,12 @@ export class SshClient {
 
   /** Transport closed under us. */
   transportClosed(err?: Error) {
-    this.fail(err ?? new SshError("connection closed by the phone"));
+    this.fail(err ?? new SshError(`the phone closed the connection (at: ${this.stage}${this.serverId ? `, server ${this.serverId}` : ", no server banner"})`));
+  }
+
+  private at(stage: string) {
+    this.stage = stage;
+    this.log(`SSH: ${stage}`);
   }
 
   private fail(err: Error) {
@@ -371,6 +378,7 @@ export class SshClient {
           if (!line.startsWith("SSH-2.0-") && !line.startsWith("SSH-1.99-")) throw new SshError(`unsupported protocol ${line}`);
           this.serverId = line;
           this.gotIdent = true;
+          this.at(`server banner ${line}`);
           break;
         }
       }
@@ -509,7 +517,9 @@ export class SshClient {
     const ours = this.kexInit();
     this.ourKexInit = ours;
     void this.sendAsync(ours);
+    this.at("KEXINIT sent");
     const theirs = serverKexInit ?? (await this.expect(MSG.KEXINIT)).raw;
+    this.at("server KEXINIT received");
     const r = new R(theirs);
     r.off = 17;
     const [kexs, hks, encCS, encSC, macCS, macSC] = [r.list(), r.list(), r.list(), r.list(), r.list(), r.list()];
@@ -522,7 +532,9 @@ export class SshClient {
     const eph = x25519.utils.randomSecretKey();
     const qc = x25519.getPublicKey(eph);
     void this.sendAsync(new W().u8(MSG.KEX_ECDH_INIT).bytes(qc).out());
+    this.at(`ECDH_INIT sent (${cCS})`);
     const rep = (await this.expect(MSG.KEX_ECDH_REPLY)).r;
+    this.at("ECDH_REPLY received");
     const ks = rep.bytes();
     const qs = rep.bytes();
     const sig = rep.bytes();
@@ -556,6 +568,7 @@ export class SshClient {
     this.dirOut = outDir; // every packet framed after this point uses the new keys
     await nk;
     await this.expect(MSG.NEWKEYS);
+    this.at("NEWKEYS exchanged");
     // parsing stopped right after NEWKEYS: install the inbound keys, then resume on the buffered bytes
     this.dirIn = this.pendingIn;
     this.pendingIn = null;
@@ -569,15 +582,18 @@ export class SshClient {
   /** Version exchange, key exchange and publickey login. */
   async connect(): Promise<void> {
     await this.writeOut(enc.encode(CLIENT_ID + "\r\n"));
+    this.at("client banner sent");
     await this.kex();
     this.send(new W().u8(MSG.SERVICE_REQUEST).str("ssh-userauth").out());
     await this.expect(MSG.SERVICE_ACCEPT);
+    this.at("userauth service accepted");
     const user = this.opts.user ?? "root";
     const { seed, pub } = this.opts.key;
     const blob = new W().str("ssh-ed25519").bytes(pub).out();
     const toSign = new W().bytes(this.sessionId!).u8(MSG.USERAUTH_REQUEST).str(user).str("ssh-connection").str("publickey").bool(true).str("ssh-ed25519").bytes(blob).out();
     const sig = new W().str("ssh-ed25519").bytes(ed25519.sign(toSign, seed)).out();
     this.send(new W().u8(MSG.USERAUTH_REQUEST).str(user).str("ssh-connection").str("publickey").bool(true).str("ssh-ed25519").bytes(blob).bytes(sig).out());
+    this.at("publickey login sent");
     for (;;) {
       const m = await this.expect(MSG.USERAUTH_SUCCESS, MSG.USERAUTH_FAILURE, MSG.USERAUTH_BANNER);
       if (m.type === MSG.USERAUTH_SUCCESS) return;

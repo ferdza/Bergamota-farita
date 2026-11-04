@@ -53,7 +53,8 @@ class SshSession {
     this.rebooting = null;
     try {
       const tcp = await log.stack.connect(22);
-      const ssh = new SshClient((b) => tcp.write(b), { key: this.key });
+      log.note("SSH: TCP connected to port 22");
+      const ssh = new SshClient((b) => tcp.write(b), { key: this.key, log: (m) => log.note(m) });
       tcp.ondata = (b) => ssh.feed(b);
       tcp.onclose = (e) => ssh.transportClosed(e);
       ssh.onclose = (e) => {

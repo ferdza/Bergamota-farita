@@ -153,6 +153,11 @@ class LogSession {
     return out.reverse();
   }
 
+  /** A line from the page itself (SSH progress…), shown in the log as "# …". */
+  note(text: string) {
+    this.pending.push({ id: this.nextId++, text: `# ${text}`, tags: 0 });
+  }
+
   /** Puts earlier history (the kernel buffer fetched over SSH) before what the page received live. */
   prependHistory(text: string, title: string) {
     const lines = text.split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.length);
