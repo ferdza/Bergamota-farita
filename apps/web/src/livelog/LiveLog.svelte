@@ -9,6 +9,17 @@
   const supported = log.supported;
 
   let viewEl: HTMLElement | undefined = $state();
+
+  /** Keeps a box scrolled to its end as its text grows, unless the user scrolled up to read. */
+  function follow(el: HTMLElement, _text: string) {
+    let atEnd = true;
+    el.addEventListener("scroll", () => (atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24));
+    return {
+      update() {
+        if (atEnd) el.scrollTop = el.scrollHeight;
+      },
+    };
+  }
   // follow the tail unless the user turned it off or paused
   $effect(() => {
     log.visible.length;
@@ -127,6 +138,15 @@
           {/if}
           {#if sshs.error}<p class="problem">{sshs.error}</p>{/if}
           {#if sshs.output}<pre class="out">{sshs.output}</pre>{/if}
+          {#if sshs.klog || (sshs.cancel && sshs.klogHead)}
+            <div class="klog">
+              <div class="row">
+                <span class="muted">{sshs.klogHead}</span>
+                <button class="btn" disabled={!sshs.klog} onclick={() => sshs.saveKernelLog()}>Download .txt</button>
+              </div>
+              <pre class="out" use:follow={sshs.klog}>{sshs.klog || "(waiting for the first line…)"}</pre>
+            </div>
+          {/if}
           <details class="up">
             <summary>Send a file to the phone</summary>
             <div class="uprow">
@@ -172,6 +192,8 @@
 </div>
 
 <style>
+  .klog .row { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin: 8px 0 6px; }
+  .klog .row .muted { font-size: 12px; overflow-wrap: anywhere; }
   .busy { display: flex; gap: 12px; align-items: flex-start; }
   .busy p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; flex: 1; font-family: ui-monospace, monospace; font-size: 12px; }
   .page { max-width: 1180px; margin: 0 auto; padding: 0 clamp(16px, 3.4vw, 48px) 48px; display: grid; gap: 16px; }

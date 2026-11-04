@@ -188,20 +188,21 @@ class SshSession {
       ].join("; ");
       const t0 = Date.now();
       let lines = 0;
-      let last = "";
+      this.klog = "";
+      this.klogHead = `# kernel log via sweetlog, phone up ${up === null ? "?" : fmtSecs(up)}, last ${fmtSecs(secs)}, started ${new Date().toLocaleString()}`;
       const show = () => {
         const sec = Math.round((Date.now() - t0) / 1000);
-        this.busy = `Reading the kernel log (this boot, last ${fmtSecs(secs)}): ${lines} lines so far, ${sec} s` +
-          (last ? `\nlatest: ${last.slice(0, 160)}` : "\n(sweetlog prints nothing until it reaches the window; can take a minute)");
+        this.busy = `Reading the kernel log (last ${fmtSecs(secs)}): ${lines} lines so far, ${sec} s` +
+          (lines ? "" : " (sweetlog prints nothing until it reaches the window; can take a minute)");
       };
       show();
       const tick = setInterval(show, 1000);
       const dec = new TextDecoder();
       const onData = (b: Uint8Array) => {
-        const t = dec.decode(b, { stream: true });
+        const t = dec.decode(b, { stream: true }).replace(/\r/g, "");
         lines += (t.match(/\n/g) ?? []).length;
-        const ls = t.split("\n").filter((l) => l.trim());
-        if (ls.length) last = ls[ls.length - 1].replace(/\r$/, "");
+        // kept in the page as it comes (the box shows it, "Download .txt" saves it), capped at 16 MB
+        if (this.klog.length < 16 << 20) this.klog += t;
       };
       let r;
       try {
@@ -213,6 +214,8 @@ class SshSession {
       }
       const { text, code, signal, stopped } = r;
       const cut = stopped ? "STOPPED by you" : signal ? `CUT: sweetlog killed (${signal})` : "";
+      this.klog = text;
+      this.klogHead += `, ended ${new Date().toLocaleTimeString()}: ${stopped ? "stopped by you" : signal ? `killed by SIG${signal}, the end is missing` : `exit ${code}`}`;
       const head = `kernel log, phone up ${up === null ? "?" : fmtSecs(up)}, last ${fmtSecs(secs)}` + (cut ? `, ${cut}` : "");
       if (text.trim()) log.prependHistory(text, head + " at " + new Date().toLocaleTimeString());
       const n = text.split("\n").filter((l) => l.trim()).length;
@@ -226,6 +229,20 @@ class SshSession {
   }
 
   output = $state<string | null>(null);
+
+  /** What the kernel log button collected (live while it runs), and its header line. */
+  klog = $state("");
+  klogHead = $state("");
+
+  /** The collected kernel log as a .txt download. */
+  saveKernelLog() {
+    const url = URL.createObjectURL(new Blob([this.klogHead + "\n" + this.klog], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bergamota-kernel-${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19)}.txt`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
 
   /** The processes using the most CPU (the little cores were pegged on the first boots). */
   async topCpu() {
