@@ -332,6 +332,10 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
   - **Kernel CI 41822152639 (attempt 2; attempt 1 got no macOS runner) -> xnu/out-fajita8 = 0254..0257.** BearSSL
     came from the new vendored copy (xnu/vendor/sweet_bearssl-7bea48e; bearssl.org 502). Images (gitignored):
     research/ios18/enxerto-boot-ios18-fajita-{zc2,gpu5,gpu7,gpu8,gpu8-safe}-link2.img (the -link ones deleted).
+  - **zc2-link2 on the tablet (log 12:52): REPLAY works (the page got the console from "Darwin Kernel Version" on)
+    and the adopt lines are finally seen:** `adopt sid 0x880 smr 0 s2cr 0x0 -> 0x3 read back 0x3 (identity bank)`,
+    same for 0xc80 smr 1 -> `zero-copy allowed`, `zero-copy scanout armed`, stats mode=zc smmu=identity. **The OnePlus
+    hypervisor accepts the S2CR rewrite** (open question of 0254 closed). Our bank: cb 3, ttbr0 0x104a4c000.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
