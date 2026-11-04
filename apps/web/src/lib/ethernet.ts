@@ -9,8 +9,9 @@
 export const HOST_IP = "192.168.7.1"; // us (the router, from the phone's point of view)
 export const PHONE_IP = "192.168.7.2"; // the phone's ue0
 export const LOG_PORT = 5140;
-/** A locally-administered unicast MAC we present to the phone (bit 1 of the first octet = local). */
-export const HOST_MAC = Uint8Array.from([0x02, 0xbe, 0x47, 0x0a, 0x01, 0x01]);
+/** The host MAC the phone's ECM function advertises (iMACAddress "02005E77EE01", xnu patch 0075; the
+ * phone itself is ..:02). Using it means we look exactly like a computer's own cdc_ether interface. */
+export const HOST_MAC = Uint8Array.from([0x02, 0x00, 0x5e, 0x77, 0xee, 0x01]);
 
 export const ETH_ARP = 0x0806;
 export const ETH_IPV4 = 0x0800;

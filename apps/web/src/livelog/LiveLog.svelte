@@ -21,6 +21,12 @@
     });
   });
 
+  const udevCmd =
+    `echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="1209", ATTR{idProduct}=="0001", MODE="0660", TAG+="uaccess"' | sudo tee /etc/udev/rules.d/51-bergamota-net.rules\nsudo udevadm control --reload && sudo udevadm trigger`;
+  // the phone's interface is the one with the host MAC the phone advertises (02:00:5e:77:ee:01)
+  const unbindCmd =
+    `D=$(basename "$(readlink -f /sys/class/net/$(ip -br link | awk 'tolower($3)=="02:00:5e:77:ee:01"{print $1}')/device)")\necho -n "$D" | sudo tee /sys/bus/usb/drivers/cdc_ether/unbind`;
+
   const klass = (tags: number) => (tags & (1 << 4) ? "crash" : tags & 0b1111 ? "sweet" : "");
 </script>
 
@@ -63,17 +69,20 @@
     </section>
 
     {#if log.error}<p class="problem" role="alert">{log.error}</p>{/if}
-    {#if log.osNet}
+    {#if log.setup}
       <section class="sheet osnet">
-        <h2>Your computer already took the phone's USB network.</h2>
-        <p>Good news: that means iOS is up. Your system's own USB-Ethernet driver (on Linux <code>cdc_ether</code>) holds the interface, so the browser can't. Read the log without it — once per setup, give the interface the host address, then listen on UDP {LOG_PORT}:</p>
-        <pre>ip -br link                      # the phone's interface, e.g. enp0s20f0u2
-nmcli con add type ethernet ifname IFACE con-name berga ipv4.method manual ipv4.addresses {HOST_IP}/24 ipv6.method disabled
-nmcli con up berga
-ping -c 3 {PHONE_IP}
-python3 -c "import socket;s=socket.socket(2,2);s.bind(('',{LOG_PORT}));[print(s.recv(65535).decode(errors='replace'),end='',flush=True) for _ in iter(int,1)]"</pre>
-        <p class="muted">SSH: <code>ssh root@{PHONE_IP}</code> (needs the SSH key you gave when patching).</p>
+        <h2>{log.setup === "access" ? "Your computer doesn't let the browser open the phone yet." : "Your computer's own network driver holds the phone."}</h2>
+        <p>Good news first: the phone answered on USB, so iOS is up. On Linux, two commands hand it to this page.</p>
+        <p><b>1. Once:</b> let your user open the phone's USB network device (<code>1209:0001</code>), like the fastboot rule:</p>
+        <pre>{udevCmd}</pre>
+        <p><b>2. Each time the phone boots iOS:</b> take the interface away from <code>cdc_ether</code> (the system's driver), then press Connect:</p>
+        <pre>{unbindCmd}</pre>
+        <p class="muted">While this page holds it, your computer's own <code>ping</code>/<code>ssh</code> to {PHONE_IP} stop; to give it back, replug the cable or run the same line with <code>bind</code> instead of <code>unbind</code>.</p>
+        <div class="row"><button class="btn leaf" onclick={() => log.connect()}>Connect again</button></div>
+        {#if log.rawError}<p class="muted">Browser said: <code>{log.rawError}</code></p>{/if}
       </section>
+    {:else if log.rawError}
+      <p class="muted raw">Browser said: <code>{log.rawError}</code></p>
     {/if}
 
     <section class="controls">
@@ -142,7 +151,8 @@ python3 -c "import socket;s=socket.socket(2,2);s.bind(('',{LOG_PORT}));[print(s.
 
   .osnet pre { background: var(--ink); color: #e8e6dc; font: 400 12.5px/1.6 var(--mono); padding: 14px 16px; border-radius: 6px; overflow-x: auto; white-space: pre; }
   .osnet h2 { font-size: 22px; margin: 0 0 10px; }
-  .osnet .muted { color: var(--ink-soft); font-size: 13px; }
+  .osnet .muted, .raw { color: var(--ink-soft); font-size: 13px; }
+  .osnet .row { margin-top: 12px; }
   .note { font-size: 13px; color: var(--ink-soft); margin: 0; }
   .problem { background: #fdecea; color: #6b1d0c; padding: 12px 16px; border-radius: 6px; margin: 0; }
 

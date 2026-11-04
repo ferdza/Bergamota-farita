@@ -16,7 +16,19 @@ const PACKET_FILTER_ALL = 0x0f;
 /** Filters for the device picker: match the CDC Communications or Data interface class. */
 export const USBNET_FILTERS: USBDeviceFilter[] = [{ classCode: CDC_COMM }, { classCode: CDC_DATA }];
 
-export class UsbNetError extends Error {}
+/** kind: "access" = the OS denies the browser the device (Linux: no udev rule for 1209:0001);
+ * "busy" = the OS's own driver (Linux cdc_ether) holds the interface. raw = the browser's own error. */
+export class UsbNetError extends Error {
+  kind: "access" | "busy" | "other";
+  raw: string;
+  constructor(message: string, kind: "access" | "busy" | "other" = "other", raw = "") {
+    super(message);
+    this.kind = kind;
+    this.raw = raw;
+  }
+}
+
+const rawOf = (e: unknown) => `${(e as Error)?.name ?? "Error"}: ${(e as Error)?.message ?? String(e)}`;
 
 function isData(a: USBAlternateInterface): boolean {
   return a.interfaceClass === CDC_DATA && a.endpoints.some((e) => e.type === "bulk");
@@ -50,7 +62,11 @@ export class UsbNet {
 
   static async open(dev: USBDevice): Promise<UsbNet> {
     const net = new UsbNet(dev);
-    if (!dev.opened) await dev.open();
+    try {
+      if (!dev.opened) await dev.open();
+    } catch (e) {
+      throw new UsbNetError("the computer does not let the browser open the phone's USB device", "access", rawOf(e));
+    }
     if (!dev.configuration) await dev.selectConfiguration(dev.configurations[0].configurationValue);
     const cfg = dev.configuration!;
 
@@ -67,7 +83,7 @@ export class UsbNet {
       if (comm) await dev.claimInterface(comm.interfaceNumber);
       await dev.claimInterface(data.interfaceNumber);
     } catch (e) {
-      throw new UsbNetError(`could not claim the networking interface. Close anything else using the phone (the Bergamota app, another tab) and replug. (${(e as Error).message})`);
+      throw new UsbNetError("another driver holds the phone's network interface (Linux: cdc_ether)", "busy", rawOf(e));
     }
     // ECM carries the data endpoints on a non-zero alternate setting; select it to turn them on.
     if (alt.alternateSetting !== 0) await dev.selectAlternateInterface(data.interfaceNumber, alt.alternateSetting);

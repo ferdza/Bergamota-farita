@@ -22,8 +22,9 @@ class LogSession {
   linesPerSec = $state(0);
   arpReplies = $state(0);
   deviceName = $state<string | null>(null);
-  /** Your computer's own network driver holds the phone's USB network: show the native way. */
-  osNet = $state(false);
+  /** Why the connect failed, when it is the computer's setup rather than the phone. */
+  setup = $state<"access" | "busy" | null>(null);
+  rawError = $state<string | null>(null);
 
   // view controls
   search = $state("");
@@ -47,6 +48,8 @@ class LogSession {
     if (this.state === "connecting" || this.state === "live") return;
     this.state = "connecting";
     this.error = null;
+    this.setup = null;
+    this.rawError = null;
     try {
       const net = dev ? await UsbNet.open(dev) : await UsbNet.request();
       this.net = net;
@@ -62,9 +65,15 @@ class LogSession {
         this.state = "idle"; // the user closed the picker
       } else {
         this.state = "error";
-        const why = err instanceof UsbNetError && !/claim/i.test(err.message) ? err.message : explain(err);
-        this.osNet = why === "osnet";
-        this.error = this.osNet ? null : why;
+        if (err instanceof UsbNetError && err.kind !== "other") {
+          this.setup = err.kind;
+          this.rawError = err.raw;
+          this.error = null;
+        } else {
+          this.setup = null;
+          this.rawError = `${err.name}: ${err.message}`;
+          this.error = explain(err);
+        }
       }
     }
   }
@@ -163,10 +172,7 @@ class LogSession {
 }
 
 function explain(e: Error): string {
-  // On Linux (and macOS/Windows) the OS's own USB-Ethernet driver (cdc_ether…) takes the phone's network
-  // interface as soon as iOS is up, so the browser cannot claim it: read the log natively instead.
-  if (e.name === "SecurityError" || e.name === "NetworkError" || /claim|protected|access denied/i.test(e.message || ""))
-    return "osnet";
+  if (e.name === "SecurityError") return "The browser refused USB access for this page (it must be Chrome or Edge, on https).";
   return e.message || String(e);
 }
 
