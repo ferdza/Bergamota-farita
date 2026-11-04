@@ -30,6 +30,7 @@ pub mod hfswrite;
 #[cfg(not(target_family = "wasm"))]
 pub mod http;
 pub mod io;
+pub mod ipa;
 pub mod ipsw;
 pub mod macho;
 pub mod machostage;

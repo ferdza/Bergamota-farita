@@ -45,6 +45,8 @@
   let upPath = $state("/var/root/");
   let upMode = $state("755");
   let zipFile = $state<File | null>(null);
+  let ipaFile = $state<File | null>(null);
+  let rmApp = $state("");
 
   const klass = (tags: number) => (tags & (1 << 4) ? "crash" : tags & 0b1111 ? "sweet" : "");
 </script>
@@ -170,6 +172,18 @@
               <input class="path" bind:value={upPath} spellcheck="false" aria-label="Destination path on the phone" />
               <input class="mode" bind:value={upMode} spellcheck="false" aria-label="File mode" />
               <button class="btn" disabled={!upFile || !!sshs.busy || upPath.endsWith("/")} onclick={() => upFile && sshs.uploadPicked(upFile, upPath, upMode)}>Send</button>
+            </div>
+          </details>
+          <details class="up">
+            <summary>Install an app (.ipa)</summary>
+            <p class="muted">A decrypted IPA (App Store downloads are FairPlay-encrypted and cannot run). This page re-signs every binary for this phone, copies the app to <code>/Applications</code> and registers it.</p>
+            <div class="uprow">
+              <input type="file" accept=".ipa,application/octet-stream,application/zip" aria-label="IPA to install" onchange={(e) => (ipaFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null)} />
+              <button class="btn" disabled={!ipaFile || !!sshs.busy} onclick={() => ipaFile && sshs.installIpa(ipaFile)}>Install</button>
+            </div>
+            <div class="uprow">
+              <input class="path" bind:value={rmApp} spellcheck="false" placeholder="Name.app" aria-label="App to remove" />
+              <button class="btn" disabled={!rmApp.trim() || !!sshs.busy} onclick={() => confirm(`Remove /Applications/${rmApp.trim()}?`) && sshs.removeApp(rmApp.trim())}>Remove an app</button>
             </div>
           </details>
           <details class="up">

@@ -49,6 +49,19 @@ interface Exports {
   rr_open_ipsw(): number;
   rr_build(p: number, n: number): number;
   rr_link_dylib(bin: number, binLen: number, path: number, pathLen: number, weak: number): number;
+  rr_prepare_ipa(p: number, n: number): number;
+  rr_meta_ptr(): number;
+  rr_meta_len(): number;
+}
+
+export interface PreparedIpa {
+  app: string;
+  bundleId: string;
+  version: string;
+  machos: number;
+  pacRewritten: number;
+  bundlesSealed: number;
+  files: number;
 }
 
 export class PatcherError extends Error {}
@@ -120,6 +133,20 @@ export class Renegade {
     const out = new Uint8Array(this.x.memory.buffer, this.x.rr_result_ptr(), this.x.rr_result_len()).slice();
     if (rc !== 0) throw new PatcherError(new TextDecoder().decode(out));
     return out;
+  }
+
+  /**
+   * An .ipa -> a tar of `Name.app/` for /Applications: every Mach-O PAC-stripped and re-signed ad hoc (entitlements
+   * kept), bundles re-sealed, FairPlay-encrypted code refused (PatcherError).
+   */
+  prepareIpa(ipa: Uint8Array): { tar: Uint8Array; meta: PreparedIpa } {
+    const p = this.put(ipa);
+    const rc = this.x.rr_prepare_ipa(p, ipa.length);
+    this.x.rr_free(p, ipa.length);
+    const out = new Uint8Array(this.x.memory.buffer, this.x.rr_result_ptr(), this.x.rr_result_len()).slice();
+    if (rc !== 0) throw new PatcherError(new TextDecoder().decode(out));
+    const meta = JSON.parse(new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, this.x.rr_meta_ptr(), this.x.rr_meta_len())));
+    return { tar: out, meta };
   }
 
   /** The module with no IPSW, image or tools behind it: for the single-file calls (linkDylib). */

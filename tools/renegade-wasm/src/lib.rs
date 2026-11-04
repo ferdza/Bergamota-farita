@@ -92,6 +92,7 @@ impl Seek for HostOut {
 
 thread_local! {
     static RESULT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static META: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static IPSW: RefCell<Option<renegade::ipsw::Ipsw>> = const { RefCell::new(None) };
 }
 
@@ -274,6 +275,41 @@ pub unsafe extern "C" fn rr_link_dylib(bin_ptr: *const u8, bin_len: usize, path_
     match renegade::tools::link_dylib(bin, &path, weak != 0) {
         Ok(signed) => {
             RESULT.with(|r| *r.borrow_mut() = signed);
+            0
+        }
+        Err(e) => {
+            set_result(e.to_string());
+            1
+        }
+    }
+}
+
+/// The JSON that came with the last binary result (rr_prepare_ipa).
+#[unsafe(no_mangle)]
+pub extern "C" fn rr_meta_ptr() -> *const u8 {
+    META.with(|r| r.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rr_meta_len() -> usize {
+    META.with(|r| r.borrow().len())
+}
+
+/// An `.ipa` (bytes from rr_alloc) -> the result buffer holds the ustar archive of `Name.app/` (PAC-stripped, every
+/// Mach-O re-signed ad hoc, bundles re-sealed) and the meta buffer its JSON {app, bundleId, version, machos,
+/// pacRewritten, bundlesSealed, files}. On failure the result buffer holds the error text. No host import.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rr_prepare_ipa(ptr: *const u8, len: usize) -> i32 {
+    // SAFETY: the host passes a buffer it got from rr_alloc
+    let ipa = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    match renegade::ipa::prepare(Rc::new(ipa)) {
+        Ok(p) => {
+            let meta = format!(
+                "{{\"app\":{},\"bundleId\":{},\"version\":{},\"machos\":{},\"pacRewritten\":{},\"bundlesSealed\":{},\"files\":{}}}",
+                json_str(&p.app), json_str(&p.bundle_id), json_str(&p.version), p.machos, p.pac_rewritten, p.bundles_sealed, p.files
+            );
+            META.with(|m| *m.borrow_mut() = meta.into_bytes());
+            RESULT.with(|r| *r.borrow_mut() = p.tar);
             0
         }
         Err(e) => {

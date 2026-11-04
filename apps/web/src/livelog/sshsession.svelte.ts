@@ -142,7 +142,7 @@ class SshSession {
       if (!r.ok) throw new SshError(`this site has no tools bundle (${r.status})`);
       const { unzipSync } = await import("fflate");
       const files = unzipSync(new Uint8Array(await r.arrayBuffer()));
-      const names = ["sweetlog", "sweetmetrics", "sweetshot", "sweetsample", "sweettouch", "sweetprefs"];
+      const names = ["sweetlog", "sweetmetrics", "sweetshot", "sweetsample", "sweettouch", "sweetprefs", "sweetuicache"];
       const done: string[] = [];
       for (const n of names) {
         const data = files[`sweetnet/ios18/${n}`];
@@ -224,16 +224,15 @@ class SshSession {
       this.busy = `Reading ${fromOrig ? BB + ".orig" : BB}…`;
       const bin = await this.fetchBytes(`cat ${fromOrig ? BB + ".orig" : BB}`);
       this.busy = "Linking the inject and re-signing (in this page)…";
-      this.renegade ??= fetch(wasmUrl).then((r) => r.arrayBuffer()).then((b) => Renegade.standalone(b));
       // iOS 26 kept a short name for binaries with little header slack: /usr/local/bgi.dylib, a symlink to the inject
       let lib = INJ;
       let signed: Uint8Array;
       try {
-        signed = (await this.renegade).linkDylib(bin, INJ, true);
+        signed = (await this.wasm()).linkDylib(bin, INJ, true);
       } catch (e) {
         if (!/no slack/.test((e as Error).message)) throw e;
         lib = "/usr/local/bgi.dylib";
-        signed = (await this.renegade).linkDylib(bin, lib, true);
+        signed = (await this.wasm()).linkDylib(bin, lib, true);
         const l = await this.run(`ln -sf ${INJ} ${lib} && ls -l ${lib}`);
         if (l.code !== 0) throw new SshError(`could not make ${lib}: ${l.text.trim()}`);
       }
@@ -280,6 +279,63 @@ class SshSession {
         "for f in /private/var/tmp/bgmtl-bb.state /private/var/tmp/bgmtl-bb.off; do [ -e $f ] && { echo \"== $f\"; cat $f; }; done; " +
         "echo '== bgmtl.log (last 60 lines)'; tail -n 60 /private/var/tmp/bgmtl.log 2>/dev/null || echo '(no log yet: the inject has not run)'",
     );
+  }
+
+  private wasm(): Promise<Renegade> {
+    this.renegade ??= fetch(wasmUrl).then((r) => r.arrayBuffer()).then((b) => Renegade.standalone(b));
+    return this.renegade;
+  }
+
+  /**
+   * Sideload an .ipa (tools/sweet-install-ipa.sh, without a Mac): the page unzips it, PAC-strips and re-signs every
+   * Mach-O ad hoc and re-seals the bundles (WASM), streams the result as a tar into /Applications over SSH and registers
+   * it with sweetuicache (LaunchServices). Decrypted IPAs only: App Store downloads are FairPlay-encrypted.
+   */
+  async installIpa(file: File) {
+    if (!this.client) return;
+    this.output = null;
+    try {
+      this.busy = `Preparing ${file.name} in this page (re-signing every binary)…`;
+      const { tar, meta } = (await this.wasm()).prepareIpa(new Uint8Array(await file.arrayBuffer()));
+      if (!/^[A-Za-z0-9 ._+-]+\.app$/.test(meta.app)) throw new SshError(`refusing the app folder name ${JSON.stringify(meta.app)}`);
+      this.busy = "Checking the phone (tar, sweetuicache)…";
+      const chk = await this.run("export PATH=$PATH:/usr/local/bin:/usr/bin:/bin; command -v tar >/dev/null && echo HAVE_TAR; [ -x /usr/local/bin/sweetuicache ] && echo HAVE_UIC");
+      if (!/HAVE_TAR/.test(chk.text)) throw new SshError("this root has no tar (re-patch it with the tools bundle)");
+      if (!/HAVE_UIC/.test(chk.text)) {
+        this.busy = "Installing sweetuicache from the tools bundle…";
+        const r = await fetch(import.meta.env.BASE_URL + "tools/berga-tools.zip");
+        if (!r.ok) throw new SshError(`this site has no tools bundle (${r.status})`);
+        const { unzipSync } = await import("fflate");
+        const uic = unzipSync(new Uint8Array(await r.arrayBuffer()))["sweetnet/ios18/sweetuicache"];
+        if (!uic) throw new SshError("the tools bundle has no sweetuicache");
+        await this.upload("/usr/local/bin/sweetuicache", uic);
+      }
+      this.busy = `Sending ${meta.app} (${(tar.length / 1048576).toFixed(1)} MB)…`;
+      const q = `'/Applications/${meta.app}'`;
+      const r = await this.client.run(
+        `export PATH=$PATH:/usr/local/bin:/usr/bin:/bin; cd /Applications && rm -rf ${q} && tar -xf - && chown -R 0:80 ${q} && chmod -R u+rwX,go+rX ${q} && /usr/local/bin/sweetuicache ${q} 2>&1; echo "exit $?"`,
+        tar,
+      );
+      const out = new TextDecoder().decode(r.stdout) + new TextDecoder().decode(r.stderr);
+      this.output =
+        `${meta.app} (${meta.bundleId} ${meta.version}): ${meta.machos} binaries re-signed (${meta.pacRewritten} had arm64e code rewritten), ` +
+        `${meta.bundlesSealed} bundles sealed, ${meta.files} files\n${out.trim()}\n` +
+        "If the icon does not show at once: respring (or reboot). Uninstall: the same panel, \"Remove an app\".";
+    } catch (e) {
+      this.error = explain(e as Error);
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  /** Unregisters and deletes /Applications/NAME.app (a sideloaded app; system apps are refused by the name check only). */
+  async removeApp(name: string) {
+    const app = name.endsWith(".app") ? name : `${name}.app`;
+    if (!/^[A-Za-z0-9 ._+-]+\.app$/.test(app)) {
+      this.error = `odd app name ${JSON.stringify(app)}`;
+      return;
+    }
+    await this.runStreamed(`Remove ${app}`, `/usr/local/bin/sweetuicache -u '/Applications/${app}'; rm -rf '/Applications/${app}' && echo removed '/Applications/${app}'`);
   }
 
   /** A command whose output streams into the log box (GPU tests); Stop ends it, Download .txt keeps it. */
