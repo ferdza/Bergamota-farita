@@ -290,7 +290,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..61865419290059643524341f96d04a678503d77b
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetEntitlements.cpp
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,193 @@
 +/*
 + * Entitlements for the SWEET built-in AMFI interface (bsd/kern/sweet_amfi.c).
 + *

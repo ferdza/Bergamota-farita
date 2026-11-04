@@ -431,6 +431,11 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
         kernel ring buffer into a timestamped `bergamota-diag-ai-*.txt` file and automatically triggers a browser download.
       - Added "🛑 Éteindre (Poweroff)" button triggering clean PMIC poweroff (`reboot -p` -> `kPEHaltCPU`).
       - Added status indicator badge for disabled BT audio loop (`✅ Audio BT apaisé`).
+    * **CI run 41929423618 audit & patch 0035 repair:**
+      - Run 41929423618 failed during patch stage with `error: corrupt patch at line 487` on `sweet-0035-sweet-amfi-entitlements-platform-binaries.patch`.
+      - Root cause: Hunk header at line 293 specified `@@ -0,0 +1,194 @@` while the added SweetEntitlements.cpp had 193 lines, causing `git apply` to fail parsing the end of the hunk.
+      - Fixed line 293 to `@@ -0,0 +1,193 @@`.
+      - Added `tools/check-patches.py` to statically test the structural integrity of every patch across series 11215 and 12377 using dummy target trees before launching CI runs. All 225 patches in 11215 and 267 patches in 12377 are now verified clean.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
