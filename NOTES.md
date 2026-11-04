@@ -336,6 +336,15 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     and the adopt lines are finally seen:** `adopt sid 0x880 smr 0 s2cr 0x0 -> 0x3 read back 0x3 (identity bank)`,
     same for 0xc80 smr 1 -> `zero-copy allowed`, `zero-copy scanout armed`, stats mode=zc smmu=identity. **The OnePlus
     hypervisor accepts the S2CR rewrite** (open question of 0254 closed). Our bank: cb 3, ttbr0 0x104a4c000.
+  - **🔺 ADRENO 630 UP ON THE ONEPLUS 6T (gpu8-link2, tablet log 12:59, user booted stage 8 directly).** In order: CX GDSC
+    on, GMU RCG 200 MHz, ITCM/DTCM ok, GPU SMMU 5 SMR/5 CB (all invalid at hand-over), GMU memory 0x104ae4000, HFI
+    FW_VER 1.6 / PERF_TBL / BW_VOTE_TBL (cmd-db BCMs SH0 0x5003c MC0 0x50000 ACV 0x5000c CN0 0x500a8; CN1/CN2 absent) /
+    TEST all ACK error 0; OOB gpu acknowledged, GX GDSC on, GMU 0xbabeface, RBBM_STATUS 0x1, CP_ME_INIT idle;
+    **zap (pmOS OnePlus/enchilada a630_zap split mdt+b00..b02) authenticated by the OnePlus TZ: PAS INIT_IMAGE /
+    MEM_SETUP (carve-out 0x8c415000) / AUTH_AND_RESET all result 0**; CP_SET_SECURE_MODE 0, NOP test and 64-word fill
+    test PASSED through the GPU SMMU, KEPT UP, SweetAdreno630 published. No GPU fault/lost line afterwards, touch ran.
+    Next: Chlorophyll needs SSH (install chlorophyll-ios18.zip, tu_smoke, then Wire backboardd); the user's private
+    key is on the PC, not the tablet.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
