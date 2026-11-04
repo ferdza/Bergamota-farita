@@ -97,7 +97,14 @@ class SshSession {
   async fetchKernelLog() {
     this.busy = "Reading the kernel log…";
     try {
-      const { text } = await this.run("dmesg 2>/dev/null || sysctl -n kern.msgbuf");
+      // the SSH shell's PATH is minimal and this root may ship neither dmesg nor sysctl on it
+      const cmd = [
+        "export PATH=$PATH:/usr/sbin:/sbin:/usr/local/bin",
+        "if command -v dmesg >/dev/null 2>&1; then dmesg",
+        "elif command -v sysctl >/dev/null 2>&1; then sysctl -n kern.msgbuf",
+        `else echo 'no dmesg or sysctl on this root'; echo "PATH=$PATH"; ls /usr/sbin /sbin /usr/local/bin 2>/dev/null | tr '\\n' ' '; fi`,
+      ].join("; ");
+      const { text } = await this.run(cmd);
       log.prependHistory(text, "kernel buffer at " + new Date().toLocaleTimeString());
     } catch (e) {
       this.error = explain(e as Error);
