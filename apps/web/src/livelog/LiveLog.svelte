@@ -92,7 +92,9 @@
     {#if log.setup}
       <section class="sheet osnet">
         <h2>{log.setup === "access" ? "Your computer doesn't let the browser open the phone yet." : "Your computer's own network driver holds the phone."}</h2>
-        <p>Good news first: the phone answered on USB, so iOS is up. On Linux, two commands hand it to this page.</p>
+        <p>Good news first: the phone answered on USB, so iOS is up.</p>
+        <p><b>No commands at all:</b> boot an image made with <code>sweetusbraw=1</code> (the <code>-link</code> images). The phone then offers its own USB link instead of a USB network card: Android tablets, Linux and ChromeOS leave it alone and this page connects straight away. Your computer's own <code>ssh</code> to {PHONE_IP} does not work in that mode; this page's SSH does.</p>
+        <p>Or, on Linux with the usual image, two commands hand the phone to this page:</p>
         <p><b>1. Once:</b> let your user open the phone's USB network device (<code>1209:0001</code>), like the fastboot rule:</p>
         <pre>{udevCmd}</pre>
         <p><b>2. Each time the phone boots iOS:</b> take the interface away from <code>cdc_ether</code> (the system's driver), then press Connect:</p>

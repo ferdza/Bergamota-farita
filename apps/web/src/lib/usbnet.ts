@@ -9,12 +9,23 @@
 const CDC_COMM = 0x02; // Communications Interface Class
 const CDC_ECM_SUBCLASS = 0x06; // Ethernet Networking Control Model
 const CDC_DATA = 0x0a; // Data Interface Class
+// Bergamota's own link (kernel 0256, boot-arg sweetusbraw=1): the same Ethernet frames on one vendor interface
+// (class 0xff, subclass 0x42 'B', protocol 1), 1209:0002. No OS has a driver for it, so an Android tablet or a Linux
+// cdc_ether never takes it: the page claims it with no setup on the computer.
+const VENDOR = 0xff;
+const BERGA_SUBCLASS = 0x42;
+const BERGA_PROTOCOL = 0x01;
 const SET_ETHERNET_PACKET_FILTER = 0x43;
 // filter bits: PROMISCUOUS | ALL_MULTICAST | DIRECTED | BROADCAST — accept everything the phone sends us
 const PACKET_FILTER_ALL = 0x0f;
 
-/** Filters for the device picker: match the CDC Communications or Data interface class. */
-export const USBNET_FILTERS: USBDeviceFilter[] = [{ classCode: CDC_COMM }, { classCode: CDC_DATA }];
+/** Filters for the device picker: the CDC Communications or Data interface class, or Bergamota's own vendor link. */
+export const USBNET_FILTERS: USBDeviceFilter[] = [
+  { classCode: CDC_COMM },
+  { classCode: CDC_DATA },
+  { vendorId: 0x1209, productId: 0x0002 },
+  { classCode: VENDOR, subclassCode: BERGA_SUBCLASS, protocolCode: BERGA_PROTOCOL },
+];
 
 /** kind: "access" = the OS denies the browser the device (Linux: no udev rule for 1209:0001);
  * "busy" = the OS's own driver (Linux cdc_ether) holds the interface. raw = the browser's own error. */
@@ -30,8 +41,12 @@ export class UsbNetError extends Error {
 
 const rawOf = (e: unknown) => `${(e as Error)?.name ?? "Error"}: ${(e as Error)?.message ?? String(e)}`;
 
+function isRaw(a: USBAlternateInterface): boolean {
+  return a.interfaceClass === VENDOR && a.interfaceSubclass === BERGA_SUBCLASS && a.interfaceProtocol === BERGA_PROTOCOL;
+}
+
 function isData(a: USBAlternateInterface): boolean {
-  return a.interfaceClass === CDC_DATA && a.endpoints.some((e) => e.type === "bulk");
+  return (a.interfaceClass === CDC_DATA || isRaw(a)) && a.endpoints.some((e) => e.type === "bulk");
 }
 
 export class UsbNet {
@@ -42,6 +57,8 @@ export class UsbNet {
   private dataIface = -1;
   private commIface = -1;
   private epNotify = 0;
+  /** True on Bergamota's own vendor link (sweetusbraw=1): no CDC, nothing for the computer's OS to take. */
+  raw = false;
   /** Latest ECM NETWORK_CONNECTION notification: true = the phone says the link is up. */
   linkUp: boolean | null = null;
   notifications = 0;
@@ -75,9 +92,10 @@ export class UsbNet {
     const cfg = dev.configuration!;
 
     const data = cfg.interfaces.find((i) => i.alternates.some(isData));
-    if (!data) throw new UsbNetError("this device has no CDC-ECM data interface (is the phone booted into iOS with USB networking?)");
+    if (!data) throw new UsbNetError("this device has no network interface (CDC-ECM or Bergamota link): is the phone booted into iOS with USB networking?");
     const alt = data.alternates.find(isData)!;
     net.dataIface = data.interfaceNumber;
+    net.raw = isRaw(alt);
 
     const comm = cfg.interfaces.find((i) => i.alternates.some((a) => a.interfaceClass === CDC_COMM && a.interfaceSubclass === CDC_ECM_SUBCLASS));
     net.commIface = comm?.interfaceNumber ?? -1;
@@ -89,7 +107,11 @@ export class UsbNet {
       if (comm) await dev.claimInterface(comm.interfaceNumber);
       await dev.claimInterface(data.interfaceNumber);
     } catch (e) {
-      throw new UsbNetError("another driver holds the phone's network interface (Linux: cdc_ether)", "busy", rawOf(e));
+      throw new UsbNetError(
+        net.raw ? "the browser could not claim the Bergamota link (another tab or app has it open?)" : "another driver holds the phone's network interface (Linux: cdc_ether; on Android or without root, boot an image with sweetusbraw=1)",
+        "busy",
+        rawOf(e),
+      );
     }
     // ECM carries the data endpoints on a non-zero alternate setting; select it to turn them on.
     if (alt.alternateSetting !== 0) await dev.selectAlternateInterface(data.interfaceNumber, alt.alternateSetting);
