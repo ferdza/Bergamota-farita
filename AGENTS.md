@@ -1,4 +1,6 @@
-# Working on ios-beryllium (fork of ios-sweet)
+# Working on Bergamota-farita (fork of Bergamota: Poco F1 + OnePlus 6T)
+
+- fajita (OnePlus 6T) port: read `docs/FAJITA.md` first; its ADT must also say `xiaomi,beryllium` (the kernel gates SDM845 paths on it).
 
 - Do NOT add a `Co-Authored-By: dipa-studio` (or any other co-author) trailer to commits in this fork; that rule in NOTES.md is upstream ios-sweet's. Credit upstream in README.md only.
 

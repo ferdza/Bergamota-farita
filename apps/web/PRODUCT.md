@@ -12,7 +12,7 @@ Svelte 5 + Vite (user's choice, 2026-10-24), TypeScript, multi-page build (`/` l
 
 ## Users
 
-People with a Xiaomi Poco F1 (`beryllium`) and an unlocked bootloader who want to put Bergamota (Apple's iOS userland on that phone) on it, including people without a Mac (Linux and Windows users could not complete the Mac-only flow). The flasher has two modes (user's request): a **simple** mode that walks a person through the steps and hides fastboot detail, and an **advanced** mode for people who know fastboot and want the device variables, partition choice, chunk sizes and a protocol log.
+People with a Xiaomi Poco F1 (`beryllium`) or a OnePlus 6T (`fajita`, docs/FAJITA.md) and an unlocked bootloader who want to put Bergamota (Apple's iOS userland on that phone) on it, including people without a Mac (Linux and Windows users could not complete the Mac-only flow). The flasher has two modes (user's request): a **simple** mode that walks a person through the steps and hides fastboot detail, and an **advanced** mode for people who know fastboot and want the device variables, partition choice, chunk sizes and a protocol log.
 
 ## Product Purpose
 
@@ -34,7 +34,7 @@ The only way to run iOS's real userland on a non-Apple phone, and an open-source
 ## Capabilities and Constraints
 
 - Writes only `userdata` (iOS root), `boot` (Enxerto) and `logo` (splash). Never modem, persist, bluetooth, dsp, bootloaders or anything else; no erase, format or arbitrary oem commands.
-- The device must identify as product `beryllium`.
+- The device must identify as a supported product: `beryllium` (Poco F1), `sdm845` (OnePlus 6T in ABL fastboot) or `fajita` (OnePlus 6T in Bergamota fastboot). See `src/lib/flasher.ts` SUPPORTED_PRODUCTS.
 - Streams the image from a user-picked file or the browser's private storage (OPFS); never reads a whole image into memory.
 - Never hosts or bundles Apple files (IPSW contents, shared caches, kernelcaches) or Qualcomm firmware.
 - Delta flashing (Bergamota fastboot `oem hash`) exists in the Mac tool; the web flasher does full flashes first. Undecided: whether to add delta later.

@@ -20,6 +20,9 @@
 
 ---
 
+> **OnePlus 6T (`fajita`):** this fork also boots iOS 18 on the OnePlus 6T (same SoC). Port guide, status and the
+> Linux-only workflow (web flasher, live log): [`docs/FAJITA.md`](docs/FAJITA.md).
+
 The Poco F1 boots the **unmodified iOS 18.7.8 userland of the iPhone XR** (`iPhone11,8`) to SpringBoard. It runs from its own UFS storage and is driven from a Mac over USB. Four parts make that work, each named after a piece of the bergamot tree:
 
 | | Part | What it does | Where |
