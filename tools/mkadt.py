@@ -375,6 +375,27 @@ if __name__ == '__main__':
     identity = sys.argv[sys.argv.index('--identity') + 1] if '--identity' in sys.argv else 'd22ap'
     root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board, display_scale=scale, points=points,
                  lowpool=lowpool, identity=identity)
+    # --gpu-fw DIR: Adreno 630 firmware carried in the ADT (/sweet-gpu), read by the kernel's GPU bring-up
+    # (xnu patch 0103 fw_from_adt, before any file system): a630_gmu.bin -> gmu-firmware, a630_sqe.fw ->
+    # sqe-firmware, a630_zap.mdt -> zap-mdt, a630_zap.bNN -> zap-bNN (tools/split-mbn.py makes them from a
+    # squashed .mbn). OEM firmware: the boot image that carries this ADT must stay out of git and releases.
+    if '--gpu-fw' in sys.argv:
+        fw_dir = sys.argv[sys.argv.index('--gpu-fw') + 1]
+        files = [('gmu-firmware', 'a630_gmu.bin'), ('sqe-firmware', 'a630_sqe.fw'), ('zap-mdt', 'a630_zap.mdt')]
+        files += [(f'zap-b{i:02d}', f'a630_zap.b{i:02d}') for i in range(10)]
+        props = []
+        for prop, fname in files:
+            path = os.path.join(fw_dir, fname)
+            if os.path.exists(path):
+                data = open(path, 'rb').read()
+                if len(data) > 0x40000:
+                    raise SystemExit(f'--gpu-fw: {fname} is {len(data)} bytes, over the kernel FW_MAX 0x40000')
+                props.append((prop, data))
+                print(f'--gpu-fw: {prop} <- {fname} ({len(data)} bytes)', file=sys.stderr)
+        missing = {'gmu-firmware', 'sqe-firmware', 'zap-mdt'} - {p for p, _ in props}
+        if missing:
+            print(f'--gpu-fw: warning: no {", ".join(sorted(missing))} (the bring-up stops at the stage that needs it)', file=sys.stderr)
+        root.children.append(node('sweet-gpu', props))
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
