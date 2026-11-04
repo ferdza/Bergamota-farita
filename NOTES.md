@@ -329,6 +329,9 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     lost. -> xnu-11215 **0257**: ud_log_thread also binds UDP 5141; a datagram "REPLAY" sets the read position to
     0 (sweet_log_copy clamps to the oldest byte of the 4 MiB ring) = the whole boot resent. Web: sent 700 ms
     after connect + button "Log since boot". No SSH needed (user has no private key on the tablet). CI 41819228726.
+  - **Kernel CI 41822152639 (attempt 2; attempt 1 got no macOS runner) -> xnu/out-fajita8 = 0254..0257.** BearSSL
+    came from the new vendored copy (xnu/vendor/sweet_bearssl-7bea48e; bearssl.org 502). Images (gitignored):
+    research/ios18/enxerto-boot-ios18-fajita-{zc2,gpu5,gpu7,gpu8,gpu8-safe}-link2.img (the -link ones deleted).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
