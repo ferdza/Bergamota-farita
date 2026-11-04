@@ -160,7 +160,7 @@ index 2460e6d..68cf74a 100644
  start:
  	if (kernel_thread_start((thread_continue_t)cf_thread, NULL, &thread) == KERN_SUCCESS) {
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index 4c250ca..7151525 100644
+index 4c250ca..84dbb14 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -51,6 +51,7 @@ extern "C" int sweet_smmu_adopt_sid(unsigned sid);            /* bsd/dev/sweet_s
@@ -171,7 +171,16 @@ index 4c250ca..7151525 100644
  extern "C" uint32_t sweet_gpu_fence_snapshot(void);     /* bsd/dev/sweet_a630.c (0229) */
  extern "C" bool sweet_gpu_blit_window(uint64_t pa, uint64_t size);      /* bsd/dev/sweet_a630.c (0240) */
  extern "C" uint32_t sweet_gpu_blit(uint64_t src_pa, uint32_t src_pitch, uint64_t dst_pa, uint32_t dst_pitch, uint32_t w, uint32_t h);
-@@ -1009,7 +1010,12 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+@@ -251,6 +252,8 @@ class AppleCLCD : public IOMobileFramebuffer {
+ 	static void swapFired(OSObject *owner, IOTimerEventSource *sender);
+ 
+ public:
++	/* 0258: the user client kicks the vsync timer on display on (its dark tick is 200 ms) */
++	void vsyncKick() { if (fVsync != NULL) { fVsync->setTimeoutUS(1); } }
+ 	uint64_t      fPhys;
+ 	uint32_t      fWidth, fHeight, fRowBytes;
+ 	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
+@@ -1009,7 +1012,12 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
  			fb->fBlackDone = true;
  			fb->blackout();
  		}
@@ -185,13 +194,13 @@ index 4c250ca..7151525 100644
  		return;
  	}
  	bool flush = fb->fDirty && (count % fb->fFlushTicks) == 0 && fb->gpuGateOpen(mach_absolute_time());
-@@ -3627,6 +3633,10 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+@@ -3627,6 +3635,10 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
  				fFB->fDirty = true;     /* on: redraw the latest frame */
  			}
  			IOLockUnlock(fFB->fLock);
 +			__atomic_store_n(&sweet_display_off, off ? 1 : 0, __ATOMIC_RELEASE);   /* 0258 */
-+			if (!off && fFB->fVsync != NULL) {
-+				fFB->fVsync->setTimeoutUS(1);   /* 0258: the dark tick is 200 ms; show the new frame now */
++			if (!off) {
++				fFB->vsyncKick();       /* 0258: the dark tick is 200 ms; show the new frame now */
 +			}
  			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
  		}
