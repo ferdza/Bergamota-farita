@@ -90,7 +90,7 @@ index 204207f..b50cf84 100644
  	bool started, dead, probing, bitbang;
  	int kind, irq_hint;
  	uint32_t irq_status, irq_last, active;
-@@ -1042,6 +1065,245 @@ touch_se_init(void)
+@@ -1042,6 +1065,275 @@ touch_se_init(void)
  	return true;
  }
  
@@ -103,6 +103,11 @@ index 204207f..b50cf84 100644
 +static uint8_t f12_query, f12_ctrl, f12_data;
 +static char fj_product[12];
 +static int fj_xraw = 1080, fj_yraw = 2340, fj_max_x, fj_max_y;
++/* RMI4 interrupt bits are assigned in PDT order, each function taking (entry[4] & 7)
++ * sources (Linux rmi_driver.c rmi_count_irqs): never assume F12 = bit 2. */
++static uint16_t fj_f12_irq, fj_irq_all;
++static unsigned fj_irq_bytes = 1, fj_frames;
++static uint8_t fj_raw[16];
 +
 +static void
 +fj_gpio(vm_offset_t base, unsigned pin, unsigned mux, unsigned pull,
@@ -168,8 +173,10 @@ index 204207f..b50cf84 100644
 +{
 +	uint8_t buf[6];
 +
++	unsigned irq_pos = 0;
 +	f01_query = f01_cmd = f01_ctrl = f01_data = 0;
 +	f12_query = f12_ctrl = f12_data = 0;
++	fj_f12_irq = 0;
 +	for (int a = 0x00e9; a > 6; a -= 6) {
 +		if (rmi_read((uint8_t)a, buf, sizeof(buf)) != 0) {
 +			printf("SWEET TS: PDT read %#x failed\n", a);
@@ -178,6 +185,14 @@ index 204207f..b50cf84 100644
 +		if (buf[5] == 0x00) {
 +			break;
 +		}
++		unsigned nirq = buf[4] & 0x07u;
++		uint16_t imask = (irq_pos + nirq <= 16u) ? (uint16_t)(((1u << nirq) - 1u) << irq_pos) : 0;
++		printf("SWEET TS: PDT F%02x q=%#x cmd=%#x ctl=%#x d=%#x irqs %u at bit %u\n",
++		    buf[5], buf[0], buf[1], buf[2], buf[3], nirq, irq_pos);
++		if (buf[5] == 0x12) {
++			fj_f12_irq = imask;
++		}
++		irq_pos += nirq;
 +		if (buf[5] == 0x01) {
 +			f01_query = buf[0];
 +			f01_cmd = buf[1];
@@ -189,6 +204,9 @@ index 204207f..b50cf84 100644
 +			f12_data = buf[3];
 +		}
 +	}
++	fj_irq_all = (uint16_t)((irq_pos >= 16u) ? 0xffffu : ((1u << irq_pos) - 1u));
++	fj_irq_bytes = irq_pos > 8u ? 2u : 1u;
++	printf("SWEET TS: %u interrupt sources, F12 mask %#x\n", irq_pos, fj_f12_irq);
 +	if (f01_data == 0 || f12_data == 0) {
 +		printf("SWEET TS: no F01/F12 in the PDT (f01=%#x f12=%#x)\n", f01_data, f12_data);
 +		return false;
@@ -202,9 +220,9 @@ index 204207f..b50cf84 100644
 +	uint8_t id[11] = {0};
 +
 +	if (rmi_write(f01_cmd, 0x01) == 0) {          /* reset */
-+		touch_wait(100);
++		touch_wait(200);                       /* syna,reset-delay-ms = <200> */
 +	}
-+	if (rmi_read((uint8_t)(f01_query + 0x10u), id, 10) == 0) {
++	if (rmi_read((uint8_t)(f01_query + 11u), id, 10) == 0) {   /* product id: F01 query 11..20 */
 +		for (unsigned k = 0; k < 10; ++k) {
 +			fj_product[k] = (char)id[k];
 +		}
@@ -214,7 +232,9 @@ index 204207f..b50cf84 100644
 +		}
 +		printf("SWEET TS: product id \"%s\"\n", fj_product);
 +	}
-+	if (rmi_write(f01_ctrl, 0x84) != 0 || rmi_write((uint8_t)(f01_ctrl + 1u), 0x7f) != 0) {
++	/* ctrl0: configured | nosleep; ctrl1.. : interrupt enable, every source the PDT counted */
++	if (rmi_write(f01_ctrl, 0x84) != 0 || rmi_write((uint8_t)(f01_ctrl + 1u), (uint8_t)fj_irq_all) != 0 ||
++	    (fj_irq_bytes > 1u && rmi_write((uint8_t)(f01_ctrl + 2u), (uint8_t)(fj_irq_all >> 8)) != 0)) {
 +		printf("SWEET TS: F01 control write failed\n");
 +		return false;
 +	}
@@ -233,13 +253,16 @@ index 204207f..b50cf84 100644
 +	if (rmi_read(f12_data, d, sizeof(d)) != 0) {
 +		return false;
 +	}
++	for (unsigned k = 0; k < sizeof(fj_raw); ++k) {
++		fj_raw[k] = d[k];
++	}
 +	for (unsigned i = 0; i < TOUCH_MAX; ++i) {
 +		const uint8_t *o = d + i * 8u;
 +		if (o[0] == 0) {
 +			continue;
 +		}
-+		int rx = o[1] | ((o[2] & 0x0fu) << 8);
-+		int ry = o[3] | ((o[4] & 0x0fu) << 8);
++		int rx = o[1] | (o[2] << 8);
++		int ry = o[3] | (o[4] << 8);
 +		int px = (int)((int64_t)rx * tb->w / (fj_xraw > 0 ? fj_xraw : (int)tb->w));
 +		int py = (int)((int64_t)ry * tb->h / (fj_yraw > 0 ? fj_yraw : (int)tb->h));
 +		if (px < 0) { px = 0; }
@@ -251,6 +274,9 @@ index 204207f..b50cf84 100644
 +		mask |= 1u << i;
 +		if (rx > fj_max_x) { fj_max_x = rx; }
 +		if (ry > fj_max_y) { fj_max_y = ry; }
++	}
++	if (mask) {
++		++fj_frames;
 +	}
 +	touch_report(mask, x, y);
 +	return true;
@@ -304,8 +330,8 @@ index 204207f..b50cf84 100644
 +	    f01_query, f01_data, f12_query, f12_ctrl, f12_data);
 +	unsigned errors = 0, ticks = 0;
 +	while (!st.dead) {
-+		uint8_t status[2] = {0};
-+		if (rmi_read(f01_data, status, sizeof(status)) != 0) {
++		uint8_t status[3] = {0};
++		if (rmi_read(f01_data, status, 1u + fj_irq_bytes) != 0) {
 +			if (++errors > 200) {
 +				printf("SWEET TS: giving up on the controller\n");
 +				break;
@@ -317,13 +343,17 @@ index 204207f..b50cf84 100644
 +		if (status[0] & 0x80) {
 +			(void)rmi_f01_init();        /* unconfigured -> re-init */
 +		}
-+		if (status[1] & 0x04) {
++		uint16_t irq = (uint16_t)(status[1] | (status[2] << 8));
++		/* F12's own bit, any bit if the PDT gave none, and a 50 ms poll in case ATTN/irq never shows */
++		if ((irq & (fj_f12_irq ? fj_f12_irq : 0xffffu)) || (ticks % 5u) == 0) {
 +			(void)rmi_frame();
-+		} else if (status[1] & 0x01) {
-+			touch_report(0, st.x, st.y);
 +		}
 +		if ((++ticks % 300u) == 0) {
-+			printf("SWEET TS: raw max x=%d y=%d irq=%#x\n", fj_max_x, fj_max_y, status[1]);
++			printf("SWEET TS: raw max x=%d y=%d irq=%#x dev=%#x frames=%u f12[0..15]="
++			    "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
++			    fj_max_x, fj_max_y, irq, status[0], fj_frames,
++			    fj_raw[0], fj_raw[1], fj_raw[2], fj_raw[3], fj_raw[4], fj_raw[5], fj_raw[6], fj_raw[7],
++			    fj_raw[8], fj_raw[9], fj_raw[10], fj_raw[11], fj_raw[12], fj_raw[13], fj_raw[14], fj_raw[15]);
 +		}
 +		touch_wait(10);
 +	}
@@ -336,7 +366,7 @@ index 204207f..b50cf84 100644
  static void
  touch_thread(void *arg, wait_result_t result)
  {
-@@ -1202,6 +1464,10 @@ sweet_touch_init(void)
+@@ -1202,6 +1494,10 @@ sweet_touch_init(void)
 -	if (sweet_board_beryllium()) {
 +	/* fajita first: its ADT also says xiaomi,beryllium (the SDM845 paths) */
 +	if (sweet_board_fajita()) {
@@ -348,7 +378,7 @@ index 204207f..b50cf84 100644
  	}
  	(void)PE_parse_boot_argn("sweettouch", &enabled, sizeof(enabled));
  	(void)PE_parse_boot_argn("sweettouchirq", &st.irq_hint, sizeof(st.irq_hint));
-@@ -1227,7 +1493,8 @@ sweet_touch_init(void)
+@@ -1227,7 +1523,8 @@ sweet_touch_init(void)
  		printf("SWEET TOUCH: disabled (sweettouch=0)\n");
  		return;
  	}
