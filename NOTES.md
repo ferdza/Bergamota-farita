@@ -122,6 +122,16 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     tb->sda/scl). diag1 image (old kernel, new ADT, +`-v sweettouch=0`):
     research/ios18/enxerto-boot-ios18-fajita-diag1.img — sent, result pending.
     Kernel CI re-run needed for the 0252 order fix.
+  - **🎉 iOS 18 USERLAND RUNS ON FAJITA (2026-11-04, observed):** diag1 (old kernel +
+    ADT with xiaomi,beryllium, `-v sweettouch=0`) booted: CDC-ECM up (host iface
+    enp0s20f0u2, NetworkManager con "berga" 192.168.7.1/24), ping 192.168.7.2 <1 ms,
+    kernel log on UDP 5140 shows launchd spawning daemons (dasd, spaceattributiond,
+    ReportCrash; ContactsCoreSpotlightExtension sig 6). The WebUSB live-log page can't
+    claim the interface on Linux (cdc_ether owns it): read UDP 5140 natively.
+    SSH refused (port 22 closed): the Pages site never shipped berga-tools.zip, so the
+    web patcher built the root WITHOUT dropbear/first-boot helpers. Fixed 1620915:
+    pages.yml runs scripts/fetch-tools.sh (berga-tools-v3, sha256 OK, served 200).
+    Needs a re-patch + re-flash of userdata. Kernel CI 41748929847 (0252 order) running.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
