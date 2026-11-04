@@ -123,7 +123,8 @@
         {:else}
           <p class="muted">root@{PHONE_IP} · {sshs.server} · host key <code>{sshs.fingerprint}</code></p>
           <div class="row acts2">
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()}>Full kernel log (dmesg)</button>
+            <button class="btn leaf" disabled={!!sshs.busy} onclick={() => sshs.bootConsole()}>Boot console (fast)</button>
+            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()}>Full kernel log (sweetlog, slow)</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.topCpu()}>Top CPU</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.installTools()}>Install tools (sweetlog…)</button>
             <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("fastboot")}>Reboot to fastboot</button>

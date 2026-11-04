@@ -3,6 +3,7 @@
 
 import { log } from "./logsession.svelte.ts";
 import { SshClient, SshError, type SshChannel } from "../lib/ssh.ts";
+import { decodeConsoleRing, READ_RING_CMD, RING_BLOCKS } from "../lib/consolering.ts";
 import { parseOpenSshKey, publicLine, SshKeyError, type Ed25519Key } from "../lib/sshkey.ts";
 
 export type RebootMode = "fastboot" | "bergamota" | "recovery" | "normal";
@@ -164,6 +165,59 @@ class SshSession {
     } catch (e) {
       this.error = explain(e as Error);
     } finally {
+      this.busy = null;
+    }
+  }
+
+  /**
+   * This boot's whole console (kernel lines from the first one, and what daemons write to the console): the ring
+   * the kernel flushes every 10 s to the end of the root partition, read raw (4 MiB, read only) and decoded here.
+   * Much faster than sweetlog, and never mixed with an older boot; but only the newest 4 MiB.
+   */
+  async bootConsole() {
+    if (!this.client) return;
+    const want = RING_BLOCKS * 4096;
+    const t0 = Date.now();
+    let got = 0;
+    this.klog = "";
+    this.klogHead = `# boot console (kernel ring at the end of the root partition), read ${new Date().toLocaleString()}`;
+    const show = () =>
+      (this.busy = got
+        ? `Reading the boot console: ${(got / 1048576).toFixed(1)} of ${(want / 1048576).toFixed(1)} MB, ${Math.round((Date.now() - t0) / 1000)} s`
+        : `Finding the end of the root partition… ${Math.round((Date.now() - t0) / 1000)} s`);
+    show();
+    const tick = setInterval(show, 500);
+    this.cancel = new AbortController();
+    try {
+      const r = await this.client.run(READ_RING_CMD, undefined, {
+        signal: this.cancel.signal,
+        onData: (b, err) => {
+          if (!err) got += b.length;
+        },
+      });
+      const err = new TextDecoder().decode(r.stderr).trim();
+      if (r.stopped) {
+        this.output = "boot console: stopped";
+        return;
+      }
+      if (r.code !== 0 || r.stdout.length < want) {
+        this.error = `boot console: could not read it (${err || `exit ${r.code}, ${r.stdout.length} bytes`}). "Full kernel log" (sweetlog) still works.`;
+        return;
+      }
+      const ring = decodeConsoleRing(r.stdout);
+      const lines = ring.text.split("\n").filter((l) => l.trim()).length;
+      const note = ring.wrapped
+        ? `the ring wrapped: only the newest ${ring.size >> 20} MiB of ${(ring.total / 1048576).toFixed(1)} MiB (read it sooner after boot for the start)`
+        : `complete since boot (${(ring.total / 1048576).toFixed(2)} MiB)`;
+      this.klogHead += `; ${err}; flush #${ring.seq}${ring.panic ? " (PANIC flush)" : ""}; ${note}`;
+      this.klog = ring.text;
+      log.prependHistory(ring.text, "boot console, " + note);
+      this.output = `boot console: ${lines} lines in ${((Date.now() - t0) / 1000).toFixed(1)} s, ${note}. Up to 10 s behind (flush interval).`;
+    } catch (e) {
+      this.error = explain(e as Error);
+    } finally {
+      clearInterval(tick);
+      this.cancel = null;
       this.busy = null;
     }
   }

@@ -274,6 +274,12 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     killed (no exit-status => "exit null", output cut mid-line) before reaching the current one. Now: window =
     launchd age (`ps -o etime= -p 1`) + 300 s, and SSH exit-signal is reported. A `positionWithTimeIntervalSinceLatestBoot:`
     mode in sweetlog.m would be cleaner but needs the macOS tools build.
+  - **Kernel log from the page, final shape:** the phone clock restarts at about the same wall time each
+    boot, so sweetlog's date window always starts in an OLDER boot (it walks ~3 min of log per real minute)
+    and rarely reaches this one. New "Boot console (fast)" button: reads the 0047 console ring (last 1025
+    blocks of /dev/rufsroot0, size found by halving with dd, read only), decoded in the page
+    (src/lib/consolering.ts, tests). This boot only, all kernel lines; newest 4 MiB (it says when it wrapped).
+    sweetlog stays as "Full kernel log (slow)", now streamed into a box with Stop + Download .txt.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
