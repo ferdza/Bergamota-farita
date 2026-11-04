@@ -1,0 +1,5 @@
+# Boot-args appended to tools/renegade/mkboot-full.sh's CMDLINE for the OnePlus 6T daily image (2026-11-04).
+# GPU on (stage 8) with the governor, interactive boost, hardware clock gating and idle slumber (docs/GPU_KERNEL.md);
+# framebuffer in direct mode with the GPU scan-out copy (no flicker with Chlorophyll, docs/FAJITA.md "The GPU");
+# the page's own USB link (kernel 0256/0257). Kernel 0258 adds the screen-off savings by default.
+-v sweetgpu=8 sweetgpufreq=gov sweetgpuboost=4 sweetgpuhwcg=1 sweetgpuidle=3000 sweetusbraw=1 sweetfb_direct=1 sweetfb_smmuadopt=1 sweetfb_swapdepth=2 sweetfb_scancopy=2
