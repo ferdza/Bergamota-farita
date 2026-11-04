@@ -86,6 +86,22 @@ The phone appears as `1209:0001` "Sweet iOS (USB Ethernet)"; the host side MAC i
   both commands. While the page holds the interface the OS cannot ping/ssh: it is one or the other.
 - **Live log without the browser:** listen on UDP 5140 (`python3 -c "import socket;…bind(('',5140))…"`).
 
+## The GPU (2026-11-04)
+
+The Adreno 630 of the 6T runs the whole stack of the Poco F1: `sweetgpu=8` brings it up (the OnePlus TrustZone accepts
+the OnePlus 6 `a630_zap` from postmarketOS `firmware-oneplus-sdm845`, split with `tools/split-mbn.py` and put in the ADT
+by `tools/mkadt.py --gpu-fw`; never commit or publish that ADT or the images built from it). Chlorophyll comes from
+`.github/workflows/chlorophyll.yml` (artifact `chlorophyll-ios18.zip`) and is installed and wired into backboardd from the
+web page's SSH panel ("Install a .zip", "Wire backboardd": iOS 26's direct mode, the inject as a weak load command).
+
+The framebuffer must be in direct mode with the scan-out copy, as on beryllium: `sweetfb_direct=1 sweetfb_smmuadopt=1
+sweetfb_swapdepth=2 sweetfb_scancopy=2`. Plain zero-copy (`sweetfb_zc=1`) scans CoreAnimation's surfaces in place, and
+IOMFBFlipBook redraws the surface on the panel as soon as the next swap completes: the screen flickers between the old
+and the new frame. Recovery boot-arg: `sweetdenypath=/usr/local/lib/bgmtl/bgmtl-inject.dylib` (kernel 0255).
+
+From an Android tablet or any host whose OS takes the USB network card: add `sweetusbraw=1` (kernel 0256, the page's
+own USB link) and the page also gets the whole boot log on connect (0257).
+
 ## Known issues (from the first boots' logs)
 
 - **Never hard-reset iOS** (long Power, Power + Vol down, a CrashDump): the root is an unjournaled HFS+;

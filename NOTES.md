@@ -364,6 +364,10 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     0240/0241 GPU 2D blit, 0247): `sweetfb_direct=1 sweetfb_swapdepth=2 sweetfb_scancopy=2|1` (direct is gated on
     sweet_board_beryllium(), true on fajita; it implies zc, so + sweetfb_smmuadopt=1). Images (gitignored):
     gpu8-direct-scancopy2-link2.img (GPU copy) and gpu8-direct-scancopy1-link2.img (CPU copy).
+  - **✅ gpu8-direct-scancopy2-link2 works (user, 15:4x): no flicker, "perf native" apart from speed.** = the daily
+    config (docs/FAJITA.md "The GPU"). Next for speed: 60 Hz (gpu8-direct-60hz-link2.img, sweetfb_hz=60; on beryllium
+    60 Hz alone did not lift the ~31 fps cap) and the CPU thieves ios26 found: ReportCrash from the AUSP/BlastDoor/
+    bluetoothd crash loops (disabled.plist + moving the on-demand executables, user OK needed).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
