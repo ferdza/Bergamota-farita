@@ -1,0 +1,127 @@
+diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
+index 8228f52..828452e 100644
+--- a/bsd/dev/sweet_reboot.c
++++ b/bsd/dev/sweet_reboot.c
+@@ -129,7 +129,16 @@ SYSCTL_PROC(_kern, OID_AUTO, sweet_reboot_mode,
+     CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sr_sysctl, "A",
+     "Reboot mode of the next reboot: bootloader (fastboot), recovery, bergamota, normal");
+ 
+-/* PSCI SYSTEM_RESET (SMCCC 1.0): fallback when PS_HOLD does not reset. */
++/* PSCI SYSTEM_OFF (SMCCC 1.0): clean poweroff through QTEE and PMIC. */
++static void
++sr_psci_system_off(void)
++{
++	register uint64_t x0 __asm__("x0") = 0x84000008ULL;
++	__asm__ volatile ("smc #0" : "+r"(x0) : : "x1", "x2", "x3", "x4", "x5", "x6", "x7",
++	    "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
++}
++
++/* PSCI SYSTEM_RESET (SMCCC 1.0): primary clean reset through QTEE. */
+ static void
+ sr_psci_system_reset(void)
+ {
+@@ -203,6 +212,39 @@ sweet_reboot_note_panic(void)
+ 	sr_in_panic = true;
+ }
+ 
++/*
++ * Power off the SoC (kPEHaltCPU): flush UFS write cache, clear reboot cookies,
++ * and call PSCI SYSTEM_OFF to instruct the PMIC to cut power.
++ */
++int
++sweet_reboot_poweroff(void)
++{
++	int flush = sweet_ufs_flush_final();
++	printf("SWEET REBOOT: poweroff, UFS cache flush -> %d%s\n", flush, flush == EBUSY ? " (busy, skipped)" : "");
++	if (!sr_ready) {
++		return -1;
++	}
++	sweet_spmi_atomic();
++	sr_pon_set_reason(SR_MAGIC_NORMAL);
++	if (sr_imem) {
++		sr_imem[0] = 0;
++		sr_imem[SR_IMEM_RESTART / 4] = 0;
++		__asm__ volatile ("dsb sy" ::: "memory");
++	}
++	printf("SWEET REBOOT: requesting PSCI SYSTEM_OFF\n");
++	__asm__ volatile ("dsb sy" ::: "memory");
++	sr_psci_system_off();
++	delay(1000 * 1000);
++	printf("SWEET REBOOT: PSCI SYSTEM_OFF did not cut power, fallback to PS_HOLD\n");
++	*sr_pshold = 0;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	delay(1000 * 1000);
++	while (1) {
++		__asm__ volatile ("wfi");
++	}
++	return -1;
++}
++
+ /*
+  * Reset the SoC. Returns only if nothing reset it (or no reset was wanted:
+  * -1, the old behaviour). panic_restart: the call comes from a panic restart.
+@@ -237,20 +279,33 @@ sweet_reboot_restart(int panic_restart)
+ 	/* bergamota: PON reason 0 (normal) so ABL boots the boot partition, where our shim lives. */
+ 	sr_pon_set_reason(mode == SR_BOOTLOADER ? SR_MAGIC_BOOTLOADER :
+ 	    mode == SR_RECOVERY ? SR_MAGIC_RECOVERY : SR_MAGIC_NORMAL);
+-	if (sr_imem && mode != SR_NORMAL) {
+-		uint32_t magic = mode == SR_BOOTLOADER ? SR_IMEM_BOOTLOADER :
+-		    mode == SR_RECOVERY ? SR_IMEM_RECOVERY : SR_IMEM_BERGAMOTA;
+-		sr_imem[SR_IMEM_RESTART / 4] = magic;
+-		__asm__ volatile ("dsb sy" ::: "memory");
+-		printf("SWEET REBOOT: IMEM restart_reason 0x146bf65c = 0x%08x\n", magic);
++	if (sr_imem) {
++		if (mode != SR_NORMAL) {
++			uint32_t magic = mode == SR_BOOTLOADER ? SR_IMEM_BOOTLOADER :
++			    mode == SR_RECOVERY ? SR_IMEM_RECOVERY : SR_IMEM_BERGAMOTA;
++			sr_imem[SR_IMEM_RESTART / 4] = magic;
++			__asm__ volatile ("dsb sy" ::: "memory");
++			printf("SWEET REBOOT: IMEM restart_reason 0x146bf65c = 0x%08x\n", magic);
++		} else {
++			/* Clear cookies so bootloader/XBL does not enter Crashdump/EDL */
++			sr_imem[0] = 0;
++			sr_imem[SR_IMEM_RESTART / 4] = 0;
++			__asm__ volatile ("dsb sy" ::: "memory");
++		}
+ 	}
++	/*
++	 * SDM845 / fajita: invoke PSCI SYSTEM_RESET first so TrustZone (EL3)
++	 * coordinates a clean warm/cold reset with PMIC and watchdog.
++	 * Pulling PS_HOLD low from EL1 directly trips Qualcomm Crashdump Mode.
++	 */
++	printf("SWEET REBOOT: requesting PSCI SYSTEM_RESET\n");
+ 	__asm__ volatile ("dsb sy" ::: "memory");
++	sr_psci_system_reset();
++	delay(1000 * 1000);
++	printf("SWEET REBOOT: PSCI did not reset, fallback to PS_HOLD\n");
+ 	*sr_pshold = 0;
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	delay(2000 * 1000);
+-	printf("SWEET REBOOT: PS_HOLD did not reset, PSCI SYSTEM_RESET\n");
+-	sr_psci_system_reset();
+-	delay(2000 * 1000);
+ 	return -1;
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index c6d113f..d5ffe88 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -11,6 +11,7 @@
+ #include <IOKit/IOLib.h>
+ 
+ extern "C" int sweet_reboot_restart(int panic_restart);
++extern "C" int sweet_reboot_poweroff(void);
+ extern "C" void sweet_reboot_note_panic(void);
+ #include "../../../bsd/dev/sweet_board.h"
+ #include "../../../bsd/dev/sweet_spmi.h"
+@@ -67,6 +68,9 @@ SweetPlatformExpert::haltRestart(unsigned int type)
+ 	case kPERestartCPU:
+ 		(void)sweet_reboot_restart(0);
+ 		break;
++	case kPEHaltCPU:
++		(void)sweet_reboot_poweroff();
++		break;
+ 	default:
+ 		break;
+ 	}

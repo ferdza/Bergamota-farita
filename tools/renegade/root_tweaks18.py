@@ -571,6 +571,13 @@ def audio(root):
         os.makedirs(dst_dir, exist_ok=True)
         shutil.move(src, dst_dir)
         print('VirtualAudio.plugin disabled')
+    for base in ['Library/Audio/Plug-Ins', 'System/Library/Audio/Plug-Ins']:
+        bt = os.path.join(root, base, 'HAL/BTAudioHALPlugin.driver')
+        dst_bt = os.path.join(root, base, 'HAL.disabled')
+        if os.path.exists(bt):
+            os.makedirs(dst_bt, exist_ok=True)
+            shutil.move(bt, dst_bt)
+            print('BTAudioHALPlugin.driver disabled (stops audiomxd/launchd 90% CPU loop)')
     for conf in glob.glob(os.path.join(root, 'System/Library/Frameworks/MediaToolbox.framework/*/SubServerConfiguration.plist')):
         st = os.stat(conf)
         data = load(conf)

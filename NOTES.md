@@ -408,6 +408,29 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
       60 Hz (wire backboardd, kill switch, 3D smoke test, status), (3) Safe Power & Console (fastboot reboot, normal reboot,
       console, sweetlog), (4) Sideload & Tools (tabs for IPA, Tools bundle, Zip, and File upload). Added live status pills
       (`⚡ CPU apaisé (~5%)` / `⚠️ Crash loops actifs`, `🎮 Compositor GPU actif`, etc.) with one-click refresh.
+  - **Round 3: PSCI Poweroff / Reboot without Crashdump, launchd 90% CPU fix, Diagnostic IA (2026-11-04 night):**
+    * **PSCI Poweroff & Reboot (xnu-11215 patch 0260):**
+      - Poweroff root cause: `SweetPlatformExpert::haltRestart(kPEHaltCPU)` was unhandled; XNU fell back to
+        `IODTPlatformExpert` which halts cores and spins in `wfi` without commanding PMIC rail shutdown. Fixed by
+        implementing `sweet_reboot_poweroff()` with UFS cache flush (`sweet_ufs_flush_final`), IMEM cookie cleanup,
+        and PSCI `SYSTEM_OFF` (`0x84000008`) SMC.
+      - Reboot Crashdump root cause: `sweet_reboot_restart` pulled `*sr_pshold = 0` from EL1 before attempting PSCI;
+        on OnePlus 6T / SDM845, uncoordinated PS_HOLD trip violates hardware watchdog sequencing and drops into
+        Qualcomm Crashdump Mode. Fixed: PSCI `SYSTEM_RESET` (`0x84000009`) via SMC is called FIRST, invoking QTEE
+        TrustZone EL3 for coordinated reset, and IMEM restart cookies (`0x146bf65c` and `[0]`) are cleared on normal reboot.
+    * **CPU drain: launchd at 87.5% and audiomxd at 22.9% (observed in user ps output):**
+      - Root cause identified: `audiomxd` repeatedly tries to load `BTAudioHALPlugin.driver` and reconnect to
+        unported/disabled `bluetoothd`. For every request, `launchd` runs `getgrouplist("mobile")` over the flat
+        `/etc/group` without cache, pinning a CPU core at 90%.
+      - Fix: `BTAudioHALPlugin.driver` is parked into `HAL.disabled` and `audiomxd` is restarted with `killall -9 audiomxd`.
+        Added to `quietCrashLoops()` in `apps/web/src/livelog/sshsession.svelte.ts`, `tools/renegade-rs/src/tweaks.rs`,
+        and `tools/renegade/root_tweaks18.py`.
+    * **One-Click AI Diagnostic Export ("Exporter Diagnostic IA", apps/web):**
+      - Created single dedicated button that collects system info (uname, uptime, date), full `ps aux` process tree,
+        sweet kernel sysctl metrics, Chlorophyll/backboardd state, disabled daemons, crash reports, and boot console /
+        kernel ring buffer into a timestamped `bergamota-diag-ai-*.txt` file and automatically triggers a browser download.
+      - Added "🛑 Éteindre (Poweroff)" button triggering clean PMIC poweroff (`reboot -p` -> `kPEHaltCPU`).
+      - Added status indicator badge for disabled BT audio loop (`✅ Audio BT apaisé`).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,

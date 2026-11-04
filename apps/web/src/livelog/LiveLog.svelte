@@ -139,6 +139,10 @@
                 <span class="pill pill-warn" title="Services en crash loop continu (CPU saturé à 100%)">⚠️ Crash loops actifs (100% CPU)</span>
               {/if}
 
+              {#if sshs.btAudioDisabled === true}
+                <span class="pill pill-green" title="BTAudioHALPlugin désactivé : audiomxd et launchd ne bouclent plus">✅ Audio BT apaisé</span>
+              {/if}
+
               {#if sshs.unportedDisabled === true}
                 <span class="pill pill-green">🛡️ launchd nettoyé</span>
               {/if}
@@ -231,21 +235,27 @@
             <div class="dash-card">
               <div class="dash-card-head">
                 <h3>🔄 Alimentation & Logs Système</h3>
-                <span class="dash-sub">Redémarrage propre (évite toute corruption HFS+ causée par un hard reset).</span>
+                <span class="dash-sub">Contrôle de l'alimentation propre et diagnostic complet instantané pour l'IA.</span>
               </div>
               <div class="dash-card-body">
                 <div class="dash-actions">
-                  <button class="btn leaf" disabled={!!sshs.busy} onclick={() => sshs.reboot("fastboot")}>
-                    🔄 Reboot vers Fastboot
+                  <button class="btn leaf" disabled={!!sshs.busy} onclick={() => sshs.exportAiDiag()} title="Télécharge un fichier .txt complet avec logs, CPU, sysctl et crashs pour l'analyser directement avec l'IA">
+                    🤖 Exporter Diagnostic IA (.txt)
+                  </button>
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.bootConsole()} title="Lit le ring buffer de console du noyau">
+                    📜 Console de boot
+                  </button>
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()} title="Lit les lignes unifiées via sweetlog">
+                    📥 Journal noyau (sweetlog)
+                  </button>
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("fastboot")}>
+                    🔄 Reboot Fastboot
                   </button>
                   <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("normal")}>
                     🔁 Reboot Normal
                   </button>
-                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.bootConsole()}>
-                    📜 Console de boot
-                  </button>
-                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()}>
-                    📥 Journal noyau (sweetlog)
+                  <button class="btn ghost" disabled={!!sshs.busy} onclick={() => confirm("Éteindre complètement l'appareil (coupure PMIC propre via PSCI) ?") && sshs.reboot("poweroff")} title="Arrêt propre du système sans vidage mémoire ni crash dump">
+                    🛑 Éteindre (Poweroff)
                   </button>
                   <button class="btn ghost" onclick={() => sshs.disconnect()}>
                     🔌 Déconnecter

@@ -515,6 +515,15 @@ pub fn audio(fs: &mut dyn Fs, log: &mut Log) -> Result<()> {
         fs.rename(src, &format!("{dst_dir}/VirtualAudio.plugin"))?;
         log.push("VirtualAudio.plugin disabled".into());
     }
+    for base in ["Library/Audio/Plug-Ins", "System/Library/Audio/Plug-Ins"] {
+        let bt = format!("{base}/HAL/BTAudioHALPlugin.driver");
+        let disabled = format!("{base}/HAL.disabled");
+        if fs.exists(&bt) {
+            fs.makedirs(&disabled)?;
+            fs.rename(&bt, &format!("{disabled}/BTAudioHALPlugin.driver"))?;
+            log.push("BTAudioHALPlugin.driver disabled (stops audiomxd/launchd 90% CPU loop)".into());
+        }
+    }
     let fw = "System/Library/Frameworks/MediaToolbox.framework";
     if fs.is_dir(fw) {
         for sub in fs.list(fw)? {

@@ -9,7 +9,7 @@ import { Renegade } from "../patcher/wasm.ts";
 import { decodeConsoleRing, READ_RING_CMD, RING_BLOCKS } from "../lib/consolering.ts";
 import { parseOpenSshKey, publicLine, SshKeyError, type Ed25519Key } from "../lib/sshkey.ts";
 
-export type RebootMode = "fastboot" | "bergamota" | "recovery" | "normal";
+export type RebootMode = "fastboot" | "bergamota" | "recovery" | "normal" | "poweroff";
 
 class SshSession {
   keyText = $state("");
@@ -25,6 +25,7 @@ class SshSession {
 
   /** Detected system states (updated automatically by refreshStatus) */
   crashLoopsQuieted = $state<boolean | null>(null);
+  btAudioDisabled = $state<boolean | null>(null);
   gpuWired = $state<boolean | null>(null);
   gpuArmed = $state<boolean | null>(null);
   gpuOffState = $state<boolean | null>(null);
@@ -108,12 +109,14 @@ class SshSession {
     try {
       const r = await this.run(
         "[ -s /var/root/disabled-bin/README ] && echo QUIET_OK; " +
+        "[ -d /Library/Audio/Plug-Ins/HAL.disabled/BTAudioHALPlugin.driver -o -d /System/Library/Audio/Plug-Ins/HAL.disabled/BTAudioHALPlugin.driver ] && echo BTAUDIO_DIS; " +
         "[ -s /usr/libexec/backboardd.orig ] && echo GPU_WIRED; " +
         "[ -f /private/var/tmp/bgmtl-bb.arm ] && echo GPU_ARMED; " +
         "[ -f /private/var/tmp/bgmtl-bb.off ] && echo GPU_OFF; " +
         "[ -s /var/root/launchd.plist.orig ] && echo UNPORTED_DIS"
       );
       this.crashLoopsQuieted = /QUIET_OK/.test(r.text);
+      this.btAudioDisabled = /BTAUDIO_DIS/.test(r.text);
       this.gpuWired = /GPU_WIRED/.test(r.text);
       this.gpuArmed = /GPU_ARMED/.test(r.text);
       this.gpuOffState = /GPU_OFF/.test(r.text);
@@ -392,6 +395,16 @@ class SshSession {
         "    mv \"$p\" \"$d\" && echo \"$d $p\" >> $L && echo \"parked $p\"",
         "  done",
         "done",
+        "for b in /Library/Audio/Plug-Ins /System/Library/Audio/Plug-Ins; do",
+        "  if [ -d \"$b/HAL/BTAudioHALPlugin.driver\" ]; then",
+        "    mkdir -p \"$b/HAL.disabled\"",
+        "    mv \"$b/HAL/BTAudioHALPlugin.driver\" \"$b/HAL.disabled/BTAudioHALPlugin.driver\" && \\",
+        "    echo \"$b/HAL.disabled/BTAudioHALPlugin.driver $b/HAL/BTAudioHALPlugin.driver\" >> $L && \\",
+        "    echo \"parked $b/HAL/BTAudioHALPlugin.driver\"",
+        "  fi",
+        "done",
+        "killall -9 audiomxd 2>/dev/null && echo 'audiomxd restarted (stops Bluetooth audio reconnect loop)' || true",
+        "killall -9 ReportCrash 2>/dev/null || true",
         "if command -v launchctl >/dev/null 2>&1; then launchctl disable system/com.apple.bluetoothd && echo 'bluetoothd disabled (from the next boot)'; else echo 'no launchctl on this root: bluetoothd left as it is'; fi",
         "echo; echo 'parked so far:'; cat $L",
       ].join("\n"),
@@ -405,6 +418,12 @@ class SshSession {
         "export PATH=$PATH:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin",
         "L=/var/root/disabled-bin/README",
         "[ -s $L ] && while read d p; do [ -e \"$d\" ] && mv \"$d\" \"$p\" && echo \"restored $p\"; done < $L; : > $L",
+        "for b in /Library/Audio/Plug-Ins /System/Library/Audio/Plug-Ins; do",
+        "  if [ -d \"$b/HAL.disabled/BTAudioHALPlugin.driver\" ]; then",
+        "    mv \"$b/HAL.disabled/BTAudioHALPlugin.driver\" \"$b/HAL/BTAudioHALPlugin.driver\" && echo \"restored $b/HAL/BTAudioHALPlugin.driver\"",
+        "  fi",
+        "done",
+        "killall -9 audiomxd 2>/dev/null && echo 'audiomxd restarted' || true",
         "command -v launchctl >/dev/null 2>&1 && launchctl enable system/com.apple.bluetoothd && echo 'bluetoothd enabled (from the next boot)'",
         "true",
       ].join("\n"),
@@ -633,15 +652,111 @@ class SshSession {
 
   /** A clean reboot: sweetreboot flushes the filesystem before resetting (never hard-reset iOS). */
   async reboot(mode: RebootMode) {
-    this.busy = `Rebooting to ${mode}…`;
+    this.busy = mode === "poweroff" ? "Powering off…" : `Rebooting to ${mode}…`;
     this.rebooting = mode;
     try {
-      // the command does not come back (the phone resets); give it a moment, then drop the session
-      void this.run(`sync; /usr/local/bin/sweetreboot ${mode}`).catch(() => {});
+      const cmd =
+        mode === "poweroff"
+          ? "sync; reboot -p 2>/dev/null || halt -p 2>/dev/null || shutdown -h now 2>/dev/null"
+          : `sync; /usr/local/bin/sweetreboot ${mode} 2>/dev/null || reboot`;
+      void this.run(cmd).catch(() => {});
       await new Promise((r) => setTimeout(r, 1500));
     } finally {
       this.busy = null;
       this.disconnect();
+    }
+  }
+
+  /**
+   * Un clic pour l'IA : rassemble l'ensemble des métriques d'exécution, d'état noyau,
+   * de processus, de logs de boot et de crashs dans un seul fichier .txt horodaté et le télécharge.
+   */
+  async exportAiDiag() {
+    if (!this.client) return;
+    this.busy = "Génération du diagnostic IA complet…";
+    this.output = null;
+    try {
+      const diagScript = [
+        "export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "echo '=== SECTION: SYSTÈME & UPTIME ==='",
+        "echo \"Date: $(date 2>/dev/null)\"",
+        "echo \"Uptime: $(uptime 2>/dev/null)\"",
+        "uname -a 2>/dev/null || true",
+        "sw_vers 2>/dev/null || true",
+        "echo ''",
+        "echo '=== SECTION: TOP PROCESSUS CPU & MÉMOIRE ==='",
+        "ps aux 2>/dev/null | head -n 45 || ps -ef 2>/dev/null | head -n 45",
+        "echo ''",
+        "echo '=== SECTION: SYSCTL SWEET NOYAU ==='",
+        "sysctl kern.sweet_cpufreq 2>/dev/null || true",
+        "sysctl kern.sweet_fb 2>/dev/null || true",
+        "sysctl kern.sweet_display_off 2>/dev/null || true",
+        "sysctl kern.sweet_charger 2>/dev/null || true",
+        "sysctl kern.sweet_reboot_mode 2>/dev/null || true",
+        "echo ''",
+        "echo '=== SECTION: CHLOROPHYLL & GPU ADRENO 630 ==='",
+        "ls -la /usr/local/lib/bgmtl/ /private/var/tmp/bgmtl* 2>/dev/null || true",
+        "ls -l /usr/libexec/backboardd /usr/libexec/backboardd.orig 2>/dev/null || true",
+        "for f in /private/var/tmp/bgmtl-bb.state /private/var/tmp/bgmtl-bb.off; do [ -e $f ] && { echo \"== $f\"; cat $f; }; done",
+        "echo '== Dernières lignes bgmtl.log:'",
+        "tail -n 40 /private/var/tmp/bgmtl.log 2>/dev/null || echo '(aucun log bgmtl)'",
+        "echo ''",
+        "echo '=== SECTION: DÉMONS GIVRÉS & CRASH LOOPS ==='",
+        "echo '== Fichiers dans disabled-bin:'",
+        "cat /var/root/disabled-bin/README 2>/dev/null || echo '(aucun binaire garé)'",
+        "echo '== Audio HAL Plugins:'",
+        "ls -la /Library/Audio/Plug-Ins/ /System/Library/Audio/Plug-Ins/ 2>/dev/null || true",
+        "echo ''",
+        "echo '=== SECTION: RAPPORTS DE CRASH RÉCENTS ==='",
+        "ls -lt /Library/Logs/CrashReporter /var/mobile/Library/Logs/CrashReporter 2>/dev/null | head -n 25 || true",
+      ].join("\n");
+
+      const res = await this.run(diagScript);
+      const report = [
+        "================================================================================",
+        "BERGAMOTA FAJITA - RAPPORT DE DIAGNOSTIC COMPLET POUR IA",
+        `Généré le: ${new Date().toISOString()} (${new Date().toLocaleString()})`,
+        "Cible: OnePlus 6T (fajita, SDM845, Adreno 630)",
+        "================================================================================",
+        "",
+        res.text.trim(),
+        "",
+        "================================================================================",
+        "=== SECTION: EXTRAIT CONSOLE DE BOOT & NOYAU ===",
+        "================================================================================",
+      ];
+
+      if (this.klog && this.klog.length > 0) {
+        report.push(`--- Log mémoire web (${this.klogHead || "console"}) ---`);
+        report.push(this.klog.slice(-100000));
+      } else {
+        const dmesgRes = await this.run("export PATH=$PATH:/usr/sbin:/sbin; dmesg 2>/dev/null | tail -n 120 || sysctl -n kern.msgbuf 2>/dev/null | tail -n 120 || true");
+        if (dmesgRes.text.trim()) {
+          report.push(dmesgRes.text.trim());
+        } else {
+          report.push("(Console noyau non accessible via dmesg/sysctl, utilisez 'Console de boot' d'abord si nécessaire)");
+        }
+      }
+
+      const fullReport = report.join("\n") + "\n";
+      const blob = new Blob([fullReport], { type: "text/plain;charset=utf-8" });
+      const nowStr = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const filename = `bergamota-diag-ai-${nowStr}.txt`;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      this.output = `Diagnostic IA exporté avec succès :\n  Fichier: ${filename}\n  Taille: ${(fullReport.length / 1024).toFixed(1)} Ko\nPartagez ce fichier directement avec l'IA.`;
+    } catch (e) {
+      this.error = explain(e as Error);
+    } finally {
+      this.busy = null;
     }
   }
 
