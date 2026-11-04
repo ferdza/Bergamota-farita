@@ -320,6 +320,8 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     notifications, SET_INTERFACE only (0,0). Generated against the build tree of CI 41814562336. Web: usbnet.ts
     accepts it (filters, isRaw, `net.raw`), tests test/usbnet.test.ts (fake WebUSB devices). In that mode the
     computer's own ssh/ping to 192.168.7.2 does not exist; the page's SSH does. Images with it: `*-link.img`.
+    Kernel CI 41816385023 (attempt 2; attempt 1 died on a BearSSL 502) -> xnu/out-fajita7 (0254+0255+0256). Images
+    (gitignored): research/ios18/enxerto-boot-ios18-fajita-{zc2,gpu5,gpu7,gpu8,gpu8-safe}-link.img. NOT booted yet.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
