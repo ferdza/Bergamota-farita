@@ -297,6 +297,22 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
       var/root/{turnip-test,chl-test,metal-turnip}/. Checked: all platform iOS, minos 18.0, arm64e,
       pacstrip "no PAC code". Web: SSH panel "Install a .zip" (only usr/local, var/root, var/mobile) and
       streamed buttons tu_smoke / chl_test / GPU state. tu_smoke needs SweetAdreno630 = a sweetgpu=8 boot.
+  - **From the ios26 branch (user: "pump most of the code of my ios26 version"), 2026-11-04:**
+    * Compared: Bergamota `ios26` (3ec24ca) vs fajita. Its Chlorophyll pointer 3f17929 is an ANCESTOR of the
+      d3cb665 we build (d3cb665 = 3f17929 + 11 Turnip commits); its root tooling (root_tweaks18.py bgmtl/
+      bglrender) is identical; its freedreno-sweet is the older one (fajita has syncobjs/prime). What it adds
+      and was taken: (1) **"direct mode"**: backboardd gets bgmtl-inject.dylib as a WEAK load command
+      (re-signed ad hoc), flags /private/var/tmp/bgmtl-bb.arm + bgmtl-bb.direct (the inject then sets
+      BGMTL_BB itself, no bgl-launch), kill switch bgmtl-bb.off (also the inject's dead-man), short-name
+      fallback /usr/local/bgi.dylib; (2) **kernel 1016 sweetdenypath** -> xnu-11215 **0255** (generated against
+      apple-oss-distributions xnu-11215.81.4 vfs_lookup.c; CI 41814562336 SUCCESS -> xnu/out-fajita6).
+    * Web (bf92c21): SSH panel "Wire backboardd" (cat backboardd -> WASM rr_link_dylib = renegade-rs
+      tools::link_dylib: pacstrip + weak LC + codesign::resign, ident/entitlements checked -> upload, .orig kept),
+      "GPU off (kill switch)", "Restore backboardd", "Chlorophyll status" (flags + bgmtl.log tail). Tests:
+      renegade-rs tests/linkdylib.rs, web test/linkdylib.test.ts (real wasm). NOT run on a phone yet; the
+      header slack of iOS 18 backboardd is unchecked (falls back to bgi.dylib).
+    * Images (out-fajita6, gitignored, OEM zap inside): research/ios18/enxerto-boot-ios18-fajita-gpu{5,7,8}-v3.img
+      and gpu8-v3-safe.img (+ sweetdenypath=/usr/local/lib/bgmtl/bgmtl-inject.dylib). v2 images deleted.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
