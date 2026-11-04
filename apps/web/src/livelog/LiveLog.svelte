@@ -47,6 +47,7 @@
   let zipFile = $state<File | null>(null);
   let ipaFile = $state<File | null>(null);
   let rmApp = $state("");
+  let sideloadTab = $state<"ipa" | "tools" | "zip" | "file">("ipa");
 
   const klass = (tags: number) => (tags & (1 << 4) ? "crash" : tags & 0b1111 ? "sweet" : "");
 </script>
@@ -126,32 +127,187 @@
           <div class="row"><button class="btn leaf" disabled={sshs.state === "connecting" || !sshs.keyText.trim()} onclick={() => sshs.connect()}>{sshs.state === "connecting" ? "Connecting…" : "Connect SSH"}</button></div>
           {#if sshs.error}<p class="problem" role="alert">{sshs.error}</p>{/if}
         {:else}
-          <p class="muted">root@{PHONE_IP} · {sshs.server} · host key <code>{sshs.fingerprint}</code></p>
-          <div class="row acts2">
-            <button class="btn leaf" disabled={!!sshs.busy} onclick={() => sshs.bootConsole()}>Boot console (fast)</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()}>Full kernel log (sweetlog, slow)</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.topCpu()}>Top CPU</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => confirm("Park the crash-looping speech/Messages helpers in /var/root/disabled-bin and disable bluetoothd (reversible with Restore)?") && sshs.quietCrashLoops()}>Quiet crash loops</button>
-            <button class="btn ghost" disabled={!!sshs.busy} onclick={() => sshs.restoreCrashLoops()}>Restore</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => confirm("Remove the launchd jobs of unported or crash-looping services (bluetoothd, wifip2pd, fairplayd, spaceattributiond, softwareupdated, webbookmarksd, corecaptured, safetyalertsd)? The original launchd.plist is kept; next boot.") && sshs.disableUnported()}>Disable unported services</button>
-            <button class="btn ghost" disabled={!!sshs.busy} onclick={() => sshs.enableUnported()}>Re-enable</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.installTools()}>Install tools (sweetlog…)</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("fastboot")}>Reboot to fastboot</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("normal")}>Reboot</button>
-            <button class="btn ghost" onclick={() => sshs.disconnect()}>Disconnect</button>
+          <div class="dash-status">
+            <div class="dash-meta">
+              <span class="user-host">root@{PHONE_IP}</span>
+              <span class="host-info">{sshs.server ?? "SSH"} · <code>{sshs.fingerprint?.slice(0, 16)}…</code></span>
+            </div>
+            <div class="dash-pills">
+              {#if sshs.crashLoopsQuieted === true}
+                <span class="pill pill-green" title="Services non essentiels (Siri, BlastDoor, BT) gelés">⚡ CPU apaisé (~5%)</span>
+              {:else if sshs.crashLoopsQuieted === false}
+                <span class="pill pill-warn" title="Services en crash loop continu (CPU saturé à 100%)">⚠️ Crash loops actifs (100% CPU)</span>
+              {/if}
+
+              {#if sshs.unportedDisabled === true}
+                <span class="pill pill-green">🛡️ launchd nettoyé</span>
+              {/if}
+
+              {#if sshs.gpuOffState}
+                <span class="pill pill-off">🛑 GPU Désactivé</span>
+              {:else if sshs.gpuArmed}
+                <span class="pill pill-green">🎮 Compositor GPU actif</span>
+              {:else if sshs.gpuWired}
+                <span class="pill pill-blue">🎮 backboardd linké</span>
+              {:else if sshs.gpuWired === false}
+                <span class="pill">Stock backboardd</span>
+              {/if}
+
+              <button class="pill pill-btn" onclick={() => sshs.refreshStatus()} title="Vérifier l'état actuel du téléphone" disabled={!!sshs.busy}>🔄 Vérifier</button>
+            </div>
           </div>
-          <div class="row acts2">
-            <span class="muted">GPU tests (after installing chlorophyll-ios18.zip):</span>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("tu_smoke", "cd /var/root/turnip-test && ./tu_smoke")}>tu_smoke</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("chl_test", "cd /var/root/chl-test && ./chl_test bg_kernels.metallib bg_render.metallib")}>chl_test</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.gpuStatus()}>Chlorophyll status</button>
+
+          <div class="dash-grid">
+            <!-- MODULE 1: OPTIMISATION CPU & STABILITÉ -->
+            <div class="dash-card">
+              <div class="dash-card-head">
+                <h3>⚡ Optimisation CPU & Stabilité</h3>
+                <span class="dash-sub">Élimine la surchauffe et la saturation CPU causées par les démons Apple en boucle.</span>
+              </div>
+              <div class="dash-card-body">
+                <div class="dash-actions">
+                  {#if !sshs.crashLoopsQuieted}
+                    <button class="btn leaf" disabled={!!sshs.busy} onclick={() => confirm("Geler les démons en crash loop (Siri, Speech, BlastDoor) dans /var/root/disabled-bin et désactiver bluetoothd ?") && sshs.quietCrashLoops()}>
+                      ⚡ Calmer les crash loops (Recommandé)
+                    </button>
+                  {:else}
+                    <button class="btn ghost" disabled={!!sshs.busy} onclick={() => sshs.restoreCrashLoops()}>
+                      ↩️ Restaurer les démons
+                    </button>
+                  {/if}
+
+                  {#if !sshs.unportedDisabled}
+                    <button class="btn" disabled={!!sshs.busy} onclick={() => confirm("Désactiver les jobs launchd des services non portés (bluetoothd, fairplayd, etc.) au prochain boot ?") && sshs.disableUnported()}>
+                      🛡️ Nettoyer launchd
+                    </button>
+                  {:else}
+                    <button class="btn ghost" disabled={!!sshs.busy} onclick={() => sshs.enableUnported()}>
+                      ↩️ Restaurer launchd
+                    </button>
+                  {/if}
+
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.topCpu()}>
+                    📊 Top CPU (Processus)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- MODULE 2: GPU ADRENO 630 & ÉCRAN 60 HZ -->
+            <div class="dash-card">
+              <div class="dash-card-head">
+                <h3>🎮 GPU Adreno 630 & Écran 60 Hz</h3>
+                <span class="dash-sub">Accélération matérielle Metal/Vulkan (Chlorophyll) en mode direct 60 Hz.</span>
+              </div>
+              <div class="dash-card-body">
+                <div class="dash-actions">
+                  {#if !sshs.gpuWired}
+                    <button class="btn leaf" disabled={!!sshs.busy} onclick={() => confirm("Activer l'injection Chlorophyll dans backboardd ? (Prend effet au prochain boot)") && sshs.gpuWire()}>
+                      🚀 Activer le compositeur GPU
+                    </button>
+                  {:else}
+                    <button class="btn ghost" disabled={!!sshs.busy} onclick={() => sshs.gpuOff()}>
+                      🛑 Kill switch (GPU off)
+                    </button>
+                    <button class="btn ghost" disabled={!!sshs.busy} onclick={() => confirm("Restaurer le backboardd d'origine ?") && sshs.gpuRestore()}>
+                      ↩️ Restaurer backboardd
+                    </button>
+                  {/if}
+
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.gpuStatus()}>
+                    🔍 Statut Chlorophyll
+                  </button>
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("tu_smoke", "cd /var/root/turnip-test && ./tu_smoke")}>
+                    🧪 Test 3D (tu_smoke)
+                  </button>
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.runStreamed("chl_test", "cd /var/root/chl-test && ./chl_test bg_kernels.metallib bg_render.metallib")}>
+                    🔬 chl_test
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- MODULE 3: ALIMENTATION & CONSOLE -->
+            <div class="dash-card">
+              <div class="dash-card-head">
+                <h3>🔄 Alimentation & Logs Système</h3>
+                <span class="dash-sub">Redémarrage propre (évite toute corruption HFS+ causée par un hard reset).</span>
+              </div>
+              <div class="dash-card-body">
+                <div class="dash-actions">
+                  <button class="btn leaf" disabled={!!sshs.busy} onclick={() => sshs.reboot("fastboot")}>
+                    🔄 Reboot vers Fastboot
+                  </button>
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.reboot("normal")}>
+                    🔁 Reboot Normal
+                  </button>
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.bootConsole()}>
+                    📜 Console de boot
+                  </button>
+                  <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.fetchKernelLog()}>
+                    📥 Journal noyau (sweetlog)
+                  </button>
+                  <button class="btn ghost" onclick={() => sshs.disconnect()}>
+                    🔌 Déconnecter
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- MODULE 4: INSTALLATION & SIDELOAD -->
+            <div class="dash-card">
+              <div class="dash-card-head">
+                <h3>📦 Sideload & Outils</h3>
+                <span class="dash-sub">Installation d'applications .ipa, pack d'outils et transfert direct de fichiers.</span>
+              </div>
+              <div class="dash-card-body">
+                <div class="sideload-tabs">
+                  <button class:on={sideloadTab === "ipa"} onclick={() => sideloadTab = "ipa"}>📱 App (.ipa)</button>
+                  <button class:on={sideloadTab === "tools"} onclick={() => sideloadTab = "tools"}>🧰 Outils</button>
+                  <button class:on={sideloadTab === "zip"} onclick={() => sideloadTab = "zip"}>📦 Zip</button>
+                  <button class:on={sideloadTab === "file"} onclick={() => sideloadTab = "file"}>📁 Fichier</button>
+                </div>
+
+                {#if sideloadTab === "ipa"}
+                  <div class="sideload-pane">
+                    <p class="muted">IPA déchiffré. Le navigateur re-signe automatiquement l'application pour le 6T et l'enregistre sur le SpringBoard.</p>
+                    <div class="uprow">
+                      <input type="file" accept=".ipa,application/octet-stream,application/zip" aria-label="IPA to install" onchange={(e) => (ipaFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null)} />
+                      <button class="btn leaf" disabled={!ipaFile || !!sshs.busy} onclick={() => ipaFile && sshs.installIpa(ipaFile)}>Installer l'IPA</button>
+                    </div>
+                    <div class="uprow" style="margin-top: 10px;">
+                      <input class="path" bind:value={rmApp} spellcheck="false" placeholder="Nom.app à désinstaller" aria-label="App to remove" />
+                      <button class="btn" disabled={!rmApp.trim() || !!sshs.busy} onclick={() => confirm(`Supprimer /Applications/${rmApp.trim()} ?`) && sshs.removeApp(rmApp.trim())}>Désinstaller</button>
+                    </div>
+                  </div>
+                {:else if sideloadTab === "tools"}
+                  <div class="sideload-pane">
+                    <p class="muted">Installe les outils indispensables dans <code>/usr/local/bin</code> (sweetlog, sweetuicache, tar, etc.).</p>
+                    <button class="btn leaf" disabled={!!sshs.busy} onclick={() => sshs.installTools()}>🧰 Installer le pack d'outils</button>
+                  </div>
+                {:else if sideloadTab === "zip"}
+                  <div class="sideload-pane">
+                    <p class="muted">Extrait un pack zip (ex: <code>chlorophyll-ios18.zip</code>) dans <code>usr/local</code>, <code>var/root</code> et <code>var/mobile</code>.</p>
+                    <div class="uprow">
+                      <input type="file" accept=".zip,application/zip" aria-label="Zip to install" onchange={(e) => (zipFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null)} />
+                      <button class="btn leaf" disabled={!zipFile || !!sshs.busy} onclick={() => zipFile && sshs.installZip(zipFile)}>Installer le .zip</button>
+                    </div>
+                  </div>
+                {:else if sideloadTab === "file"}
+                  <div class="sideload-pane">
+                    <p class="muted">Transfère un binaire ou fichier directement sur le téléphone.</p>
+                    <div class="uprow">
+                      <input type="file" aria-label="File to send" onchange={(e) => { upFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null; if (upFile && upPath.endsWith("/")) upPath += upFile.name; }} />
+                      <input class="path" bind:value={upPath} spellcheck="false" aria-label="Destination path on the phone" />
+                      <input class="mode" bind:value={upMode} spellcheck="false" aria-label="File mode" />
+                      <button class="btn leaf" disabled={!upFile || !!sshs.busy || upPath.endsWith("/")} onclick={() => upFile && sshs.uploadPicked(upFile, upPath, upMode)}>Envoyer</button>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            </div>
           </div>
-          <div class="row acts2">
-            <span class="muted">Compositor on the GPU (iOS 26 "direct mode", next boot, needs a sweetgpu=8 boot):</span>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => confirm("Link Chlorophyll's inject into backboardd (the original is kept as backboardd.orig) and arm it? It takes effect at the next boot.") && sshs.gpuWire()}>Wire backboardd</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.gpuOff()}>GPU off (kill switch)</button>
-            <button class="btn" disabled={!!sshs.busy} onclick={() => confirm("Put Apple's backboardd back (from backboardd.orig)?") && sshs.gpuRestore()}>Restore backboardd</button>
-          </div>
+
           {#if sshs.busy}
             <div class="busy">
               <p class="muted">{sshs.busy}</p>
@@ -169,35 +325,7 @@
               <pre class="out" use:follow={sshs.klog}>{sshs.klog || "(waiting for the first line…)"}</pre>
             </div>
           {/if}
-          <details class="up">
-            <summary>Send a file to the phone</summary>
-            <div class="uprow">
-              <input type="file" aria-label="File to send" onchange={(e) => { upFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null; if (upFile && upPath.endsWith("/")) upPath += upFile.name; }} />
-              <input class="path" bind:value={upPath} spellcheck="false" aria-label="Destination path on the phone" />
-              <input class="mode" bind:value={upMode} spellcheck="false" aria-label="File mode" />
-              <button class="btn" disabled={!upFile || !!sshs.busy || upPath.endsWith("/")} onclick={() => upFile && sshs.uploadPicked(upFile, upPath, upMode)}>Send</button>
-            </div>
-          </details>
-          <details class="up">
-            <summary>Install an app (.ipa)</summary>
-            <p class="muted">A decrypted IPA (App Store downloads are FairPlay-encrypted and cannot run). This page re-signs every binary for this phone, copies the app to <code>/Applications</code> and registers it.</p>
-            <div class="uprow">
-              <input type="file" accept=".ipa,application/octet-stream,application/zip" aria-label="IPA to install" onchange={(e) => (ipaFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null)} />
-              <button class="btn" disabled={!ipaFile || !!sshs.busy} onclick={() => ipaFile && sshs.installIpa(ipaFile)}>Install</button>
-            </div>
-            <div class="uprow">
-              <input class="path" bind:value={rmApp} spellcheck="false" placeholder="Name.app" aria-label="App to remove" />
-              <button class="btn" disabled={!rmApp.trim() || !!sshs.busy} onclick={() => confirm(`Remove /Applications/${rmApp.trim()}?`) && sshs.removeApp(rmApp.trim())}>Remove an app</button>
-            </div>
-          </details>
-          <details class="up">
-            <summary>Install a .zip (e.g. chlorophyll-ios18.zip)</summary>
-            <p class="muted">Files go to the paths inside the zip. Only <code>usr/local</code>, <code>var/root</code> and <code>var/mobile</code> are written; anything else is skipped and listed.</p>
-            <div class="uprow">
-              <input type="file" accept=".zip,application/zip" aria-label="Zip to install" onchange={(e) => (zipFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null)} />
-              <button class="btn" disabled={!zipFile || !!sshs.busy} onclick={() => zipFile && sshs.installZip(zipFile)}>Install</button>
-            </div>
-          </details>
+
           <p class="muted">Leave iOS with these buttons, not a hard reset: they flush the disk first.</p>
           <Terminal />
         {/if}
@@ -286,9 +414,35 @@
   .key { display: grid; gap: 6px; font-size: 14px; }
   .key textarea { font: 500 12.5px var(--mono); padding: 10px 12px; border: 2px solid var(--ink); border-radius: 6px; background: var(--white); resize: vertical; }
   .pub { word-break: break-all; font-size: 11.5px; }
-  .acts2 { display: flex; gap: 10px; flex-wrap: wrap; }
+
+  .dash-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; background: color-mix(in srgb, var(--paper-line) 40%, transparent); border-radius: 8px; margin-bottom: 4px; }
+  .dash-meta { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
+  .user-host { font-weight: 700; font-family: var(--mono); color: var(--ink); }
+  .host-info { color: var(--ink-soft); font-size: 12px; }
+  .dash-pills { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .pill { font: 600 11.5px/1 var(--mono); padding: 5px 10px; border-radius: 999px; background: var(--paper-line); color: var(--ink); display: inline-flex; align-items: center; gap: 4px; }
+  .pill-green { background: #d7edd8; color: #144d25; border: 1px solid #b2dcba; }
+  .pill-warn { background: #fff0d4; color: #8a5300; border: 1px solid #ffd899; }
+  .pill-blue { background: #e0f0fd; color: #0a4f82; border: 1px solid #bce1fb; }
+  .pill-off { background: #fae1dd; color: #7f1d1d; border: 1px solid #f5c2bb; }
+  .pill-btn { border: 1px solid var(--ink); background: var(--paper); cursor: pointer; }
+  .pill-btn:hover { background: var(--ink); color: var(--white); }
+
+  .dash-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 4px 0 12px; }
+  .dash-card { background: var(--paper); border: 1.5px solid var(--paper-line); border-radius: 8px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .dash-card-head h3 { margin: 0; font-size: 16px; font-weight: 750; letter-spacing: -0.01em; }
+  .dash-sub { font-size: 12px; color: var(--ink-soft); line-height: 1.4; display: block; margin-top: 3px; }
+  .dash-card-body { display: flex; flex-direction: column; gap: 12px; height: 100%; justify-content: space-between; }
+  .dash-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+  .sideload-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--paper-line); padding-bottom: 8px; }
+  .sideload-tabs button { border: none; background: transparent; padding: 6px 12px; font: 600 12px var(--mono); border-radius: 6px; cursor: pointer; color: var(--ink-soft); }
+  .sideload-tabs button.on { background: var(--ink); color: var(--white); }
+  .sideload-pane { font-size: 13px; display: grid; gap: 8px; padding-top: 4px; }
+  .sideload-pane p { margin: 0 0 6px; }
+
   .ok { color: var(--leaf); font-weight: 700; margin: 0; }
-  .up summary { cursor: pointer; font-weight: 700; font-size: 14px; }
+  .upsummary { cursor: pointer; font-weight: 700; font-size: 14px; }
   .uprow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
   .uprow .path { flex: 1; min-width: 220px; font: 500 13px var(--mono); padding: 8px 10px; border: 2px solid var(--ink); border-radius: 6px; }
   .uprow .mode { width: 64px; font: 500 13px var(--mono); padding: 8px 10px; border: 2px solid var(--ink); border-radius: 6px; }

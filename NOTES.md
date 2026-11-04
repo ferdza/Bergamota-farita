@@ -391,6 +391,23 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     OEM zap inside): research/ios18/enxerto-boot-ios18-fajita-daily.img = out-fajita9 + fajita-gpu.adt + base CMDLINE +
     tools/renegade/fajita-daily-args.txt. Sent to the user, NOT booted yet. If it misbehaves: gpu8-direct-scancopy2-link2
     is the last image the user confirmed (no flicker, 30 Hz, GPU at fixed 257 MHz, no 0258/0259).
+  - **Optimisation round 2 & Bug fixes (2026-11-04 late evening, user log audit):**
+    * **Touch ATTN pin on SDM845 North tile (patch 0252):** GPIO 125 was wrongly routed to `FJ_TLMM_EAST`, causing
+      "ATTN irq never seen" and constant 10 ms I2C bus traffic. Fixed to `NORTH` (`st.gpio`) and added idle polling
+      throttle (`!attn && !st.active` skips I2C 9 out of 10 ticks), eliminating ~90 % of idle I2C wakeups. Adjusted
+      0258 hunk offsets.
+    * **AMFI entitlements & broken widgets / chronod crash loop (patch 0035):** Modern iOS 18 `com.apple.chronod`
+      (13,562 bytes) was rejected with "unreadable entitlements, granting none" due to `ntohl(blob->length) != blob_len`
+      on padded superblobs. Fixed `sweet_entitlements_create` in SweetEntitlements.cpp with bounded length parsing
+      and safe OSDictionary fallback preserving the raw XML blob so userland `csops(CS_OPS_ENTITLEMENTS_BLOB)` receives
+      valid entitlements, stopping the chronod crash storm and restoring WidgetKit functionality.
+    * **Display 60 Hz Native Framerate:** Added `sweetfb_hz=60 sweetfb_vsync=0` to `tools/renegade/fajita-daily-args.txt`
+      and `tools/renegade/mkboot-full.sh` to remove the 30 Hz vsync throttle.
+    * **Web Flasher & Live Log UI redesign (`apps/web`):** Restructured `LiveLog.svelte` and `sshsession.svelte.ts`
+      into 4 clear functional cards: (1) CPU & Stabilité (quiet crash loops, launchd cleanup, top CPU), (2) GPU Adreno 630 &
+      60 Hz (wire backboardd, kill switch, 3D smoke test, status), (3) Safe Power & Console (fastboot reboot, normal reboot,
+      console, sweetlog), (4) Sideload & Tools (tabs for IPA, Tools bundle, Zip, and File upload). Added live status pills
+      (`⚡ CPU apaisé (~5%)` / `⚠️ Crash loops actifs`, `🎮 Compositor GPU actif`, etc.) with one-click refresh.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,

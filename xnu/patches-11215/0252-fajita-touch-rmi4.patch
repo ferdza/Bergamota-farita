@@ -52,7 +52,7 @@ index 204207f..b50cf84 100644
 +/*
 + * fajita (OnePlus 6T): Synaptics RMI4 at I2C 0x20 on QUPv3 SE12 (i2c@a90000).
 + * I2C SCL/SDA gpio50/49 (TLMM NORTH, qup12 mux 1), reset gpio99 (NORTH), ATTN
-+ * gpio125 and the 1.8 V switch gpio88 (TLMM EAST), VDD = PM8998 ldoa28. The GENI
++ * gpio125 (TLMM NORTH) and the 1.8 V switch gpio88 (TLMM EAST), VDD = PM8998 ldoa28. The GENI
 + * SE clock lives in GCC WRAP1_S4 (same GCC base as the other boards).
 + */
 +#define FJ_GCC_CBCR      0x184d4u       /* WRAP1_S4 CBCR: bit31 = CLK_OFF */
@@ -60,7 +60,7 @@ index 204207f..b50cf84 100644
 +#define FJ_VOTE_MASK     ((1u << 20) | (1u << 21) | (1u << 26))
 +#define FJ_TLMM_EAST     0x03500000u    /* pinctrl-sdm845 EAST tile */
 +#define FJ_TS_ADDR       0x20u
-+#define FJ_GPIO_ATTN     125u           /* EAST */
++#define FJ_GPIO_ATTN     125u           /* NORTH (pinctrl-sdm845 pin 125, active low) */
 +#define FJ_GPIO_RESET    99u            /* NORTH */
 +#define FJ_GPIO_VIO      88u            /* EAST, 1.8 V switch */
 +/* SDM845 RPMh rail vote with the PMIC4 allow-list (0104; ldoa28 added by 0253) */
@@ -90,7 +90,7 @@ index 204207f..b50cf84 100644
  	bool started, dead, probing, bitbang;
  	int kind, irq_hint;
  	uint32_t irq_status, irq_last, active;
-@@ -1042,6 +1065,275 @@ touch_se_init(void)
+@@ -1042,6 +1065,280 @@ touch_se_init(void)
  	return true;
  }
  
@@ -310,7 +310,7 @@ index 204207f..b50cf84 100644
 +	fj_gpio(st.gpio, tb->scl, 1, 0, 0, false, false);   /* gpio50 qup12 */
 +	fj_gpio(st.gpio_e, FJ_GPIO_VIO, 0, 0, 3, true, true);
 +	touch_wait(10);
-+	fj_gpio(st.gpio_e, FJ_GPIO_ATTN, 0, 3, 3, false, false);  /* input, pull-up */
++	fj_gpio(st.gpio, FJ_GPIO_ATTN, 0, 3, 3, false, false);   /* NORTH: input, pull-up */
 +	fj_gpio(st.gpio, FJ_GPIO_RESET, 0, 3, 2, true, true);
 +	touch_wait(10);
 +	fj_gpio(st.gpio, FJ_GPIO_RESET, 0, 3, 2, true, false);    /* reset low */
@@ -330,6 +330,11 @@ index 204207f..b50cf84 100644
 +	    f01_query, f01_data, f12_query, f12_ctrl, f12_data);
 +	unsigned errors = 0, ticks = 0;
 +	while (!st.dead) {
++		bool attn = !(touch_rd(st.gpio, TOUCH_GPIO_IO(FJ_GPIO_ATTN)) & 1u);
++		if (st.irq_hint && !attn && !st.active && (++ticks % 10u) != 0) {
++			touch_wait(10);
++			continue;
++		}
 +		uint8_t status[3] = {0};
 +		if (rmi_read(f01_data, status, 1u + fj_irq_bytes) != 0) {
 +			if (++errors > 200) {

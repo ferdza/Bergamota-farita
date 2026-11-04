@@ -3,4 +3,5 @@
 # framebuffer in direct mode with the GPU scan-out copy (no flicker with Chlorophyll, docs/FAJITA.md "The GPU");
 # the page's own USB link (kernel 0256/0257); debug traces off (sweetsyserr=- : no per-syscall error lines, sweetiolog=- :
 # no IOKit call lines; kernel 0259 limits the keystore lines). Kernel 0258 adds the screen-off savings by default.
--v sweetgpu=8 sweetgpufreq=gov sweetgpuboost=4 sweetgpuhwcg=1 sweetgpuidle=3000 sweetusbraw=1 sweetfb_direct=1 sweetfb_smmuadopt=1 sweetfb_swapdepth=2 sweetfb_scancopy=2 sweetsyserr=- sweetiolog=-
+# Display set to 60 Hz without vsync throttle (sweetfb_hz=60 sweetfb_vsync=0).
+-v sweetgpu=8 sweetgpufreq=gov sweetgpuboost=4 sweetgpuhwcg=1 sweetgpuidle=3000 sweetusbraw=1 sweetfb_direct=1 sweetfb_smmuadopt=1 sweetfb_swapdepth=2 sweetfb_scancopy=2 sweetfb_hz=60 sweetfb_vsync=0 sweetsyserr=- sweetiolog=-

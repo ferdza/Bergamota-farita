@@ -23,6 +23,13 @@ class SshSession {
   /** Set when the phone was asked to reboot: the link goes away on purpose. */
   rebooting = $state<RebootMode | null>(null);
 
+  /** Detected system states (updated automatically by refreshStatus) */
+  crashLoopsQuieted = $state<boolean | null>(null);
+  gpuWired = $state<boolean | null>(null);
+  gpuArmed = $state<boolean | null>(null);
+  gpuOffState = $state<boolean | null>(null);
+  unportedDisabled = $state<boolean | null>(null);
+
   client: SshClient | null = null;
   private key: Ed25519Key | null = null;
 
@@ -76,6 +83,7 @@ class SshSession {
       this.fingerprint = ssh.hostFingerprint;
       this.server = ssh.serverId;
       this.state = "ready";
+      void this.refreshStatus();
     } catch (e) {
       this.state = "error";
       this.error = explain(e as Error);
@@ -87,6 +95,32 @@ class SshSession {
     this.client = null;
     c?.disconnect();
     this.state = "idle";
+    this.crashLoopsQuieted = null;
+    this.gpuWired = null;
+    this.gpuArmed = null;
+    this.gpuOffState = null;
+    this.unportedDisabled = null;
+  }
+
+  /** Checks device status in background and updates reactive state flags. */
+  async refreshStatus() {
+    if (!this.client || this.busy) return;
+    try {
+      const r = await this.run(
+        "[ -s /var/root/disabled-bin/README ] && echo QUIET_OK; " +
+        "[ -s /usr/libexec/backboardd.orig ] && echo GPU_WIRED; " +
+        "[ -f /private/var/tmp/bgmtl-bb.arm ] && echo GPU_ARMED; " +
+        "[ -f /private/var/tmp/bgmtl-bb.off ] && echo GPU_OFF; " +
+        "[ -s /var/root/launchd.plist.orig ] && echo UNPORTED_DIS"
+      );
+      this.crashLoopsQuieted = /QUIET_OK/.test(r.text);
+      this.gpuWired = /GPU_WIRED/.test(r.text);
+      this.gpuArmed = /GPU_ARMED/.test(r.text);
+      this.gpuOffState = /GPU_OFF/.test(r.text);
+      this.unportedDisabled = /UNPORTED_DIS/.test(r.text);
+    } catch {
+      // ignore
+    }
   }
 
   /** One command; stdout as text (stderr appended), throws if SSH is not up. */
@@ -254,6 +288,7 @@ class SshSession {
       this.error = explain(e as Error);
     } finally {
       this.busy = null;
+      void this.refreshStatus();
     }
   }
 
@@ -404,6 +439,7 @@ class SshSession {
       this.error = explain(e as Error);
     } finally {
       this.busy = null;
+      void this.refreshStatus();
     }
   }
 
@@ -434,6 +470,7 @@ class SshSession {
     } finally {
       clearInterval(tick);
       this.busy = null;
+      void this.refreshStatus();
     }
   }
 

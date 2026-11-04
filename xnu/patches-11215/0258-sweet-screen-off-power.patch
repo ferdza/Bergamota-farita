@@ -31,7 +31,7 @@ index de505f3..8601147 100644
  static void
  touch_wait(unsigned ms)
  {
-@@ -1326,7 +1328,11 @@ touch_fajita_thread(void *arg, wait_result_t result)
+@@ -1331,7 +1333,11 @@ touch_fajita_thread(void *arg, wait_result_t result)
  			    fj_raw[0], fj_raw[1], fj_raw[2], fj_raw[3], fj_raw[4], fj_raw[5], fj_raw[6], fj_raw[7],
  			    fj_raw[8], fj_raw[9], fj_raw[10], fj_raw[11], fj_raw[12], fj_raw[13], fj_raw[14], fj_raw[15]);
  		}
