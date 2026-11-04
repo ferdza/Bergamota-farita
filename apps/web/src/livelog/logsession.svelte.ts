@@ -22,6 +22,8 @@ class LogSession {
   linesPerSec = $state(0);
   arpReplies = $state(0);
   deviceName = $state<string | null>(null);
+  /** Your computer's own network driver holds the phone's USB network: show the native way. */
+  osNet = $state(false);
 
   // view controls
   search = $state("");
@@ -60,7 +62,9 @@ class LogSession {
         this.state = "idle"; // the user closed the picker
       } else {
         this.state = "error";
-        this.error = err instanceof UsbNetError ? err.message : explain(err);
+        const why = err instanceof UsbNetError && !/claim/i.test(err.message) ? err.message : explain(err);
+        this.osNet = why === "osnet";
+        this.error = this.osNet ? null : why;
       }
     }
   }
@@ -159,7 +163,10 @@ class LogSession {
 }
 
 function explain(e: Error): string {
-  if (e.name === "SecurityError") return "The browser blocked USB access. Live log needs Chrome or Edge on https or localhost.";
+  // On Linux (and macOS/Windows) the OS's own USB-Ethernet driver (cdc_ether…) takes the phone's network
+  // interface as soon as iOS is up, so the browser cannot claim it: read the log natively instead.
+  if (e.name === "SecurityError" || e.name === "NetworkError" || /claim|protected|access denied/i.test(e.message || ""))
+    return "osnet";
   return e.message || String(e);
 }
 

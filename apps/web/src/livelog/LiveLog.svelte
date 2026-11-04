@@ -63,6 +63,18 @@
     </section>
 
     {#if log.error}<p class="problem" role="alert">{log.error}</p>{/if}
+    {#if log.osNet}
+      <section class="sheet osnet">
+        <h2>Your computer already took the phone's USB network.</h2>
+        <p>Good news: that means iOS is up. Your system's own USB-Ethernet driver (on Linux <code>cdc_ether</code>) holds the interface, so the browser can't. Read the log without it — once per setup, give the interface the host address, then listen on UDP {LOG_PORT}:</p>
+        <pre>ip -br link                      # the phone's interface, e.g. enp0s20f0u2
+nmcli con add type ethernet ifname IFACE con-name berga ipv4.method manual ipv4.addresses {HOST_IP}/24 ipv6.method disabled
+nmcli con up berga
+ping -c 3 {PHONE_IP}
+python3 -c "import socket;s=socket.socket(2,2);s.bind(('',{LOG_PORT}));[print(s.recv(65535).decode(errors='replace'),end='',flush=True) for _ in iter(int,1)]"</pre>
+        <p class="muted">SSH: <code>ssh root@{PHONE_IP}</code> (needs the SSH key you gave when patching).</p>
+      </section>
+    {/if}
 
     <section class="controls">
       <input class="search" placeholder="Filter text…" bind:value={log.search} autocomplete="off" spellcheck="false" aria-label="Filter log text" />
@@ -128,6 +140,9 @@
   .view .crash { color: #ff8a6a; font-weight: 700; }
   .view .empty { color: #9a988c; }
 
+  .osnet pre { background: var(--ink); color: #e8e6dc; font: 400 12.5px/1.6 var(--mono); padding: 14px 16px; border-radius: 6px; overflow-x: auto; white-space: pre; }
+  .osnet h2 { font-size: 22px; margin: 0 0 10px; }
+  .osnet .muted { color: var(--ink-soft); font-size: 13px; }
   .note { font-size: 13px; color: var(--ink-soft); margin: 0; }
   .problem { background: #fdecea; color: #6b1d0c; padding: 12px 16px; border-radius: 6px; margin: 0; }
 
