@@ -152,17 +152,25 @@ class Session {
     await this.recheck();
   }
 
+  private checkGen = 0;
+
   async recheck() {
     if (!this.picked) return;
+    // A slow check (an 18 GB sparse root) can finish after a newer one (a boot.img picked meanwhile):
+    // only the latest check may write its result, or the wrong image's verdict shows up.
+    const gen = ++this.checkGen;
+    const { src, name } = this.picked;
+    const partition = this.partition;
     this.checking = true;
     this.checkError = null;
     this.checked = null;
     try {
-      this.checked = await checkImage(this.picked.src, this.picked.name, this.partition, this.phone, this.pieceCap);
+      const c = await checkImage(src, name, partition, this.phone, this.pieceCap);
+      if (gen === this.checkGen) this.checked = c;
     } catch (e) {
-      this.checkError = (e as Error).message;
+      if (gen === this.checkGen) this.checkError = (e as Error).message;
     } finally {
-      this.checking = false;
+      if (gen === this.checkGen) this.checking = false;
     }
   }
 
@@ -280,6 +288,8 @@ class Session {
 
   /** Forget the currently chosen image (e.g. it was just deleted from browser storage). */
   forgetPicked() {
+    this.checkGen++;
+    this.checking = false;
     this.picked = null;
     this.checked = null;
     this.checkError = null;
