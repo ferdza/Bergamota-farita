@@ -37,6 +37,16 @@ jobs:
       - name: Install web deps
         working-directory: apps/web
         run: npm ci
+      # The on-device tools bundle (SSH server dropbear, first-boot helpers, GL payload), built by upstream
+      # from this repository and published as a berga-tools-vN release. The patcher fetches it from
+      # <site>/tools/berga-tools.zip; without it the root gets NO SSH server (first fajita boot, 2026-11-04).
+      - name: Fetch berga-tools (on-device SSH + helpers)
+        working-directory: apps/web
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/fetch-tools.sh
+          ls -l public/tools/
       - name: Build (base = /${{ github.event.repository.name }}/)
         working-directory: apps/web
         env:
