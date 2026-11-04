@@ -233,6 +233,19 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     streams moved; stats say smmu=identity. The probe/adopt result is re-logged every 30 s as
     `SWEET SMMU: summary …` (the probe runs before any host listens; the root has no
     dmesg/sysctl). Generated against CI 41769717548's build tree (git apply --check OK).
+  - **GPU pre-work analysis (reuse iOS 26 work), 2026-11-04:** kernel GPU patches 11215 vs 12377:
+    same 25 files, 16 byte-identical, 9 differ by 2-18 lines (XNU API) -> nothing to port, already
+    in our kernel (sweetgpu=N, staged 1..7). Chlorophyll `ios26` head (d3cb665, Turnip) is the iOS 18
+    driver plus iOS 26 additions documented as "harmless on 18" (respondsToSelector guards, Metal 4
+    queries answered NO; IOS26.md) and builds with -miphoneos-version-min=18.0 -> reuse as is.
+    Gaps: (1) firmware: pmOS zap is a630_zap.mbn (OnePlus/enchilada, 6+6T) -> split to mdt+bNN or let
+    the loader take an mbn; sqe/gmu from linux-firmware; embed via a new mkadt --gpu-fw (kernel already
+    reads /sweet-gpu ADT props). (2) build: macOS-only (xcrun iphoneos, metal, codesign, brew
+    bison/glslang, meson, Mesa 26.2.5 + libdrm + gpu/freedreno-sweet) -> new macOS Actions workflow.
+    (3) install: Python Renegade has bgmtl (old Gallium libbgair into MercuryPoster) and bglrender
+    (bgl-launch for backboardd, inert w/o boot-arg); the WASM Renegade has bglrender but NOT bgmtl /
+    first-boot -> install Chlorophyll over web SSH (needs an upload button) for the first tests.
+    Side find: berga-tools ships sweetlog (unified log reader) -> kernel lines once logd runs.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
