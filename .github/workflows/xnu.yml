@@ -3,6 +3,9 @@ name: Heartwood kernel (xnu)
 on:
   workflow_dispatch:
     inputs:
+      runner:
+        description: Runner label override (empty = by macOS version; macos-15-intel if the arm64 queue is full)
+        default: ""
       macos_version:
         description: macOS release whose xnu to build (13.5 = xnu-8796 / iOS 16 era; 15.3 = xnu-11215.81.4 / iOS 18.3 era; 26.5 = xnu-12377.121.6 / iOS 26.5 era)
         default: "15.3"
@@ -60,7 +63,8 @@ jobs:
     # (Xcode 16's iig emits IORPC.kernelContent, which that xnu lacks).
     # 15.x sources (xnu-11215): macos-15 with Xcode 16.2 (the macOS 15.2/15.3 era toolchain).
     # 26.x sources (xnu-12377): macos-26 with Xcode 26.1 (what dxb's own CI builds 26.5 with).
-    runs-on: ${{ startsWith(inputs.macos_version || (github.ref_name == 'main' && '13.5' || (github.ref_name == 'ios26' && '26.5' || '15.3')), '26.') && 'macos-26' || (startsWith(inputs.macos_version || (github.ref_name == 'main' && '13.5' || '15.3'), '15.') && 'macos-15' || 'macos-14') }}
+    # inputs.runner overrides the choice (e.g. macos-15-intel when the arm64 macOS runners are saturated)
+    runs-on: ${{ inputs.runner || startsWith(inputs.macos_version || (github.ref_name == 'main' && '13.5' || (github.ref_name == 'ios26' && '26.5' || '15.3')), '26.') && 'macos-26' || (startsWith(inputs.macos_version || (github.ref_name == 'main' && '13.5' || '15.3'), '15.') && 'macos-15' || 'macos-14') }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
