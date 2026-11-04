@@ -391,7 +391,7 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     OEM zap inside): research/ios18/enxerto-boot-ios18-fajita-daily.img = out-fajita9 + fajita-gpu.adt + base CMDLINE +
     tools/renegade/fajita-daily-args.txt. Sent to the user, NOT booted yet. If it misbehaves: gpu8-direct-scancopy2-link2
     is the last image the user confirmed (no flicker, 30 Hz, GPU at fixed 257 MHz, no 0258/0259).
-  - **Optimisation round 2 & Bug fixes (2026-11-04 late evening, user log audit):**
+  - **Optimisation round 2 & Bug fixes (2026-11-04 late evening, user log audit) — commit a319f62, Kernel CI 41925873797 IN PROGRESS:**
     * **Touch ATTN pin on SDM845 North tile (patch 0252):** GPIO 125 was wrongly routed to `FJ_TLMM_EAST`, causing
       "ATTN irq never seen" and constant 10 ms I2C bus traffic. Fixed to `NORTH` (`st.gpio`) and added idle polling
       throttle (`!attn && !st.active` skips I2C 9 out of 10 ticks), eliminating ~90 % of idle I2C wakeups. Adjusted
