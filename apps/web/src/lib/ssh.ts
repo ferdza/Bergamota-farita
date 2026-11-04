@@ -642,7 +642,8 @@ export class SshClient {
       if (opts.pty) await c.pty(250, 50, "dumb");
       if (!(await c.exec(command))) throw new SshError(`the phone refused to run: ${command}`);
       if (stdin && !stopped) await c.write(stdin);
-      c.eof();
+      // on a pty, EOF hangs the terminal up: the phone's dropbear then SIGHUPs the command at once
+      if (!opts.pty || stdin) c.eof();
     }
     const code = await Promise.race([c.done, aborted]);
     return { stdout: concat(...out), stderr: concat(...err), code, signal: c.exitSignal, stopped };

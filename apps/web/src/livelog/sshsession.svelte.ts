@@ -197,14 +197,17 @@ class SshSession {
       show();
       const tick = setInterval(show, 1000);
       const dec = new TextDecoder();
+      const onData = (b: Uint8Array) => {
+        const t = dec.decode(b, { stream: true });
+        lines += (t.match(/\n/g) ?? []).length;
+        const ls = t.split("\n").filter((l) => l.trim());
+        if (ls.length) last = ls[ls.length - 1].replace(/\r$/, "");
+      };
       let r;
       try {
-        r = await this.run(cmd, (b) => {
-          const t = dec.decode(b, { stream: true });
-          lines += (t.match(/\n/g) ?? []).length;
-          const ls = t.split("\n").filter((l) => l.trim());
-          if (ls.length) last = ls[ls.length - 1].replace(/\r$/, "");
-        }, true);
+        r = await this.run(cmd, onData, true);
+        // a dropbear that will not keep a pty open: hung up straight away, nothing read; again without one
+        if (!r.stopped && r.signal === "HUP" && !r.text.trim()) r = await this.run(cmd, onData, false);
       } finally {
         clearInterval(tick);
       }
