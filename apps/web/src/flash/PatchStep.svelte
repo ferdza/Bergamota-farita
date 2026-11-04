@@ -83,6 +83,9 @@
     <p class="problem" role="alert">{session.patchError}</p>
     <div class="row">
       <button class="btn leaf" onclick={() => session.startPatch()}>Try again</button>
+      {#if session.roomShort && !session.ignoreRoom}
+        <button class="btn ghost" onclick={() => { session.ignoreRoom = true; session.startPatch(); }}>Patch anyway (my disk has the room)</button>
+      {/if}
       <button class="btn ghost" onclick={() => session.go("IPSW")}>Choose another IPSW</button>
     </div>
   {/if}

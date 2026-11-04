@@ -65,6 +65,9 @@ class Session {
   keysNeeded = $state<string[]>([]);
   keysGot = $state<Record<string, string>>({});
   keyError = $state<string | null>(null);
+  /** The pre-check said the browser's quota is short; the user may skip it (Chrome can misjudge the disk). */
+  roomShort = $state(false);
+  ignoreRoom = $state(false);
   private keyWaiter: { resolve: (p: Record<string, string>) => void; reject: (e: Error) => void } | null = null;
 
   partition = $state<Partition>("userdata");
@@ -177,14 +180,18 @@ class Session {
     let lock: WakeLockSentinel | null = null;
     try {
       lock = await navigator.wakeLock?.request("screen").catch(() => null) ?? null;
+      // persistent storage is never evicted, and some Chrome builds report a larger quota once granted
+      await navigator.storage.persist?.().catch(() => false);
       const room = await storageRoom(neededBytes(profileForIpsw(ipsw.name).profile?.id));
-      if (!room.ok) {
+      this.roomShort = !room.ok;
+      if (!room.ok && !this.ignoreRoom) {
         const gb = (n: number) => (n / 2 ** 30).toFixed(1);
         throw new Error(
           `This browser can use only ${gb(room.free)} GB here; the root image needs about ${gb(room.needed)} GB. ` +
             `Chrome's limit follows the free space of the disk that holds the browser profile (no flag changes it): ` +
             `free about ${gb(room.needed - room.free)} GB more on that disk (with Flatpak Chrome: the disk of ~/.var/app), ` +
-            `or delete old images under Advanced → Browser storage, then try again.`,
+            `or delete old images under Advanced → Browser storage, then try again. ` +
+            `If that disk does have the room (Chrome can misjudge it, e.g. Flatpak on an immutable system: compare with chrome://quota-internals), use "Patch anyway".`,
         );
       }
       await discardImage();
@@ -229,6 +236,8 @@ class Session {
       const m = (e as Error).message;
       // a Rust panic aborts the module with a bare "unreachable"; the module logged the reason just before
       this.patchError = /unreachable|out of memory|memory access/i.test(m) && this.patchNote ? `${this.patchNote} (${m})` : m;
+      if (/QuotaExceeded|quota/i.test(m) && this.ignoreRoom)
+        this.patchError = `Chrome really stopped the writes: its storage limit for this site is too small (${m}). Check chrome://quota-internals, or run Chrome with a profile on a disk it measures correctly (--user-data-dir=…).`;
     } finally {
       this.patcher?.terminate();
       this.patcher = null;
