@@ -11,12 +11,12 @@ on:
         description: Chlorophyll branch, tag or commit
         default: ios26
       xcode_version:
-        description: Xcode on the runner (16.x has the iOS 18 SDK; empty = newest 16.x)
+        description: Xcode on the runner (empty = the newest; Chlorophyll's Metal device needs the iOS 26 SDK, binaries still target iOS 18.0)
         default: ""
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 120
     env:
       WORK: ${{ github.workspace }}/work
@@ -35,7 +35,7 @@ jobs:
           if [ -n "${{ inputs.xcode_version }}" ]; then
             XC=$(ls -d /Applications/Xcode_${{ inputs.xcode_version }}*.app | sort -V | tail -1)
           else
-            XC=$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)
+            XC=$(ls -d /Applications/Xcode_*.app | grep -v -i beta | sort -V | tail -1)
           fi
           sudo xcode-select -s "$XC"
           xcodebuild -version
