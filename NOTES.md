@@ -168,6 +168,22 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     made it report "unconfigured" and the loop's re-init took. touch3 (0252 ae270bc: 200 ms,
     PDT irq masks, 50 ms poll) should make it work from boot — to confirm. Keep touch2 as the
     known-good image meanwhile. docs/FAJITA.md written (d141e99).
+  - **touch3 CONFIRMED working from boot** (log 04-14-18): frames counted, F12 irq = 0x4 (so
+    bit 2 was right after all: the touch2 failure was the F01 reset delay), a sampled F12
+    object `01 05 03 54 00 32 07 09` = finger x=773 y=84 z=50; raw space = 1080x2340.
+  - **Log audit 04-14-18 (SpringBoard sluggish):** little cluster 100 % at 1.77 GHz the whole
+    time (big 2-92 %); sweetfb 30 Hz copy mode (zc off); replicatord respawns 14x, each with 8
+    `SWEET HFSINC hfs_cnode.c:946` = hfs_getnewvnode sanity check (fork size/blocks
+    inconsistent -> EINVAL, volume marked inconsistent); speech AUSPs crash 5x each (shared
+    abort site); softwareupdated sig11. HFSINC count per log: 01-38 = 0, 02-17 = 0, 04-14 =
+    120 -> the root got damaged by repeated hard resets (CrashDump, long Power, Vol-down to
+    fastboot) on an UNJOURNALED HFSX; Renegade's writer (fork/link records) checked: consistent.
+    Remedy: re-flash the root; then leave iOS with `sweetreboot fastboot` (0137 flushes before
+    the reset), never a hard reset. Ideas: sweetfb_zc=1 / sweetfb_hz=60 for smoothness.
+  - **Web SSH core DONE (aa01db5):** lib/ipstack.ts (TCP), lib/ssh.ts, lib/sshkey.ts, bench
+    test/bench (TAP + dropbear 2022.83: login 75 ms, 4 MiB stdin 11.9 MiB/s). UI next:
+    terminal + dmesg + reboot buttons + IPA sideload (needs a WASM single-Mach-O export:
+    renegade-rs pacstrip::strip + codesign::resign).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,

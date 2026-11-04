@@ -9,7 +9,7 @@ Everything here was verified on a real 6T on 2026-11-04 unless marked otherwise.
 | Enxerto (bootloader) | ✅ boots from `fastboot boot`, Bergamota logo, own fastboot (`getvar product` = `fajita`) |
 | Heartwood (kernel) | ✅ boots iOS 18.7.8 to SpringBoard, 8 cores, UFS, display 1080×2340 |
 | USB networking | ✅ CDC-ECM, `192.168.7.2`, kernel log on UDP 5140, SSH (dropbear) |
-| Touch (Synaptics S3706, RMI4) | 🟡 controller powered and answering; coordinates: fix in patch 0252 (not yet confirmed) |
+| Touch (Synaptics S3706, RMI4) | ✅ from boot (patches 0252, 0253) |
 | Buttons | ✅ |
 | Battery level / charging | 🟡 charger read-only (observes SDP 500 mA); state-of-charge not yet confirmed |
 | Wi-Fi, Bluetooth, audio, camera, modem | ❌ (as on beryllium) |
@@ -87,6 +87,13 @@ The phone appears as `1209:0001` "Sweet iOS (USB Ethernet)"; the host side MAC i
 - **Live log without the browser:** listen on UDP 5140 (`python3 -c "import socket;…bind(('',5140))…"`).
 
 ## Known issues (from the first boots' logs)
+
+- **Never hard-reset iOS** (long Power, Power + Vol down, a CrashDump): the root is an unjournaled HFS+;
+  repeated hard resets left files whose size exceeds their blocks (`SWEET HFSINC hfs_cnode.c:946`, the volume
+  marked inconsistent, daemons such as replicatord crash-looping, the little cores saturated). Leave iOS with
+  `sweetreboot fastboot` (it flushes first). If it already happened: re-flash the root.
+- The little cluster runs at 100 % during the first boots (background indexing, respawn loops); the display is
+  30 Hz and CPU-copied (`sweetfb_hz=30`, `sweetfb_zc` off): candidates for smoothness.
 
 - ~29 extension/plugin processes (widgets, Intents, speech AUSPs) abort at one shared site (unslid pc
   `0x1d3a641dc`, lr `0x20d0b3c1c`): one cause, to symbolicate against the shared cache.
