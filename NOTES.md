@@ -132,6 +132,12 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     web patcher built the root WITHOUT dropbear/first-boot helpers. Fixed 1620915:
     pages.yml runs scripts/fetch-tools.sh (berga-tools-v3, sha256 OK, served 200).
     Needs a re-patch + re-flash of userdata. Kernel CI 41748929847 (0252 order) running.
+  - **User saw the iOS interface (SpringBoard, Siri spawned) with diag1**, no touch
+    (sweettouch=0 by design). Kernel CI 41748929847 SUCCESS (0252 with fajita-first
+    order applied, errors.txt empty) -> xnu/out-fajita2. Touch image:
+    research/ios18/enxerto-boot-ios18-fajita-touch.img (sha256 6051c033…, cmdline =
+    mkboot-full default + `-v`), sent; touch result pending. User is re-patching the
+    root with berga-tools (SSH).
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,
