@@ -47,7 +47,9 @@ fi
 # 3. GPU firmware (OEM files: they stay in research/, which is git-ignored, and in the image, which is never published)
 FW=research/gpu-fw
 GPU_FW=()
-if [ "$GPU" != 0 ]; then
+# GPU_FW_IN_ROOT=1: GPU boot-args on, but no firmware in the ADT (the kernel then reads /usr/local/share/firmware from the root:
+# put a630_gmu.bin, a630_sqe.fw and the zap there, e.g. with the web page's "Install a .zip"). Keeps OEM firmware out of the image.
+if [ "$GPU" != 0 ] && [ "${GPU_FW_IN_ROOT:-0}" != 1 ]; then
 	if [ ! -f "$FW/a630_zap.mdt" ] && [ -f "$FW/a630_zap.mbn" ]; then
 		python3 tools/split-mbn.py "$FW/a630_zap.mbn" "$FW"
 	fi

@@ -36,6 +36,8 @@ re-run *web (GitHub Pages)*, and patch again. The root still works, on the CPU r
 D22AP_IPSW_URL=<iPhone10,3 IPSW URL> tools/install/build-boot.sh fajita      # or: beryllium
 ```
 
+`GPU_FW_IN_ROOT=1` builds the same image with the GPU arguments but no firmware inside (the kernel then reads `/usr/local/share/firmware` from the root: put `a630_gmu.bin`, `a630_sqe.fw` and your own `a630_zap.mdt` + `.bNN` there, e.g. with the web page's "Install a .zip"); `EXTRA_ARGS="sweetamp=2"` adds arguments (here: the scheduler v2).
+
 It needs, once, and you got them in step 0: `dtb/<board>/dtb` (your phone's stock DTB) and the GPU firmware in `research/gpu-fw/`
 (`tools/gpu-fw-pull.sh`, read-only from your own Android partitions) and a green *xnu* CI run (downloaded with `gh`, or `KERNEL=file`). The OEM zap firmware is inside the ADT:
 never publish the image. `GPU=0` builds a CPU-renderer image without firmware.

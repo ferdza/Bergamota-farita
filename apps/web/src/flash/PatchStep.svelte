@@ -97,7 +97,7 @@
       {session.patchInfo ? `iOS ${session.patchInfo.version} (${session.patchInfo.build}) for ${session.patchInfo.device}` : "The root"} is in this browser as <code>{session.picked?.name}</code>{#if session.picked} ({fmtBytes(session.picked.size)}){/if}. Next, connect the phone.
     </p>
     {#if session.patchGpu?.ok}
-      <p class="gpu ok" role="status"><b>GPU 3D: included.</b> Chlorophyll is in the root and backboardd is wired to it (armed). It starts on the GPU when the boot image has the GPU arguments; the kill switch and the recovery boot-arg are in INSTALL.md.</p>
+      <p class="gpu ok" role="status"><b>GPU 3D: included.</b> Chlorophyll is in the root and backboardd is wired to it (armed). It starts on the GPU when the boot image has the GPU arguments <b>and</b> the Adreno firmware is in the root: after the first boot, in the SSH panel use "Install a .zip" with a zip holding <code>usr/local/share/firmware/</code> with <code>a630_gmu.bin</code>, <code>a630_sqe.fw</code> and your phone's own <code>a630_zap.mdt</code> + <code>a630_zap.b00..</code> (they are not in this site: they are yours). Kill switch and recovery boot-arg: INSTALL.md.</p>
     {:else}
       <p class="gpu no" role="status"><b>GPU 3D: not in this root.</b> {session.patchGpu?.text ?? "The build did not report Chlorophyll."} The phone will draw on the CPU. Run the Chlorophyll workflow, republish this site and patch again to get it.</p>
     {/if}

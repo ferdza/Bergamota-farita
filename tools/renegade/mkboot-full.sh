@@ -29,6 +29,8 @@ if [ "$NAME" = ios18 ] && [ -z "${CMDLINE_GIVEN:-}" ] && [ "$GPU" != 0 ] && { [ 
 	GPU_ARGS=$(grep -v '^[[:space:]]*#' tools/renegade/gpu-default-args.txt | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 	CMDLINE="$CMDLINE $GPU_ARGS"
 fi
+# EXTRA_ARGS: more arguments for a test image (e.g. EXTRA_ARGS="sweetamp=2" to try the scheduler v2)
+[ -z "${CMDLINE_GIVEN:-}" ] && [ -n "${EXTRA_ARGS:-}" ] && CMDLINE="$CMDLINE $EXTRA_ARGS"
 # the boot header holds 607 characters of command line: refuse a longer one instead of cutting it in the middle of an argument
 if [ "${#CMDLINE}" -gt 607 ]; then
 	echo "error: the command line is ${#CMDLINE} characters, the boot header holds 607 (drop an argument or set GPU=0)" >&2
