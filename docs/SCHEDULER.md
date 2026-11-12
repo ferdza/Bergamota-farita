@@ -84,7 +84,7 @@ by utilisation: light stays LITTLE, saturated goes BIG. Realtime user threads: i
 
 | boot-arg | sysctl (root, live) | meaning |
 |---|---|---|
-| `sweetamp=0\|1\|2` (existing arg, read by `sweet_cpufreq.c` for on/off; default now 2) | `kern.sweet_amp_mode` | 0 stock Clutch, 1 old v1 (base_pri), 2 v2 |
+| `sweetamp=0\|1\|2` (existing arg, read by `sweet_cpufreq.c` for on/off; default 1 (v1) until v2 is validated on the 6T; opt in with sweetamp=2 or live with the sysctl) | `kern.sweet_amp_mode` | 0 stock Clutch, 1 old v1 (base_pri), 2 v2 |
 | `sweetamp_prio=N` | - | v1 threshold only |
 | `sweetamp_reserve=N` (1) | `kern.sweet_amp_reserve` | idle A75s kept free from low QoS threads |
 | `sweetamp_migrate=0\|1` (1) | `kern.sweet_amp_migrate` | active migration (0 = v2 placement only) |
