@@ -301,6 +301,33 @@ class SshSession {
     await this.runStreamed("GPU off", "cd /private/var/tmp && echo 'off from the web page' > bgmtl-bb.off && ls -l bgmtl-bb.*");
   }
 
+  /**
+   * "Restart the GUI with the GPU": clears the dead-man's kill switch (bgmtl-bb.off) and state, makes sure the arm/direct flags
+   * are there, then stops backboardd so launchd starts it again (SpringBoard follows): the inject runs at that start and
+   * takes the GPU if the kernel reports it ready. The screen goes black for a few seconds. Needs the wiring (gpuWire) done.
+   */
+  async gpuRestartGui() {
+    await this.runStreamed(
+      "Restart the GUI with the GPU",
+      [
+        "export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "cd /private/var/tmp || exit 1",
+        "[ -s /usr/libexec/backboardd.orig ] || { echo 'backboardd is not wired (no backboardd.orig): use \"Repair / wire the GPU\" first'; exit 1; }",
+        "echo '--- before:'; ls -l bgmtl-bb.* 2>&1; tail -n 3 bgmtl.log 2>/dev/null",
+        "rm -f bgmtl-bb.off bgmtl-bb.state",
+        "[ -e bgmtl-bb.arm ] || echo 'armed from the web page' > bgmtl-bb.arm",
+        "[ -e bgmtl-bb.direct ] || : > bgmtl-bb.direct",
+        "echo '--- flags now:'; ls -l bgmtl-bb.*",
+        "sync",
+        "echo 'stopping backboardd (launchd restarts it and SpringBoard; the screen blinks)'",
+        "killall backboardd 2>&1 || killall -9 backboardd 2>&1",
+        "sleep 8",
+        "echo '--- after 8 s:'; ps ax | grep -E 'backboardd|SpringBoard' | grep -v grep | head -4",
+        "tail -n 6 bgmtl.log 2>/dev/null",
+      ].join("\n"),
+    );
+  }
+
   /** Back to Apple's backboardd (from backboardd.orig) and the flags removed. */
   async gpuRestore() {
     await this.runStreamed(

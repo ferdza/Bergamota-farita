@@ -218,6 +218,10 @@
                     </button>
                   {/if}
 
+                  <button class="btn leaf" disabled={!!sshs.busy} onclick={() => confirm("Relancer toute l'interface (backboardd + SpringBoard) avec le GPU ? L'écran devient noir quelques secondes. Le kill switch du dead-man est effacé.") && sshs.gpuRestartGui()}>
+                    🔁 Relancer l'interface avec le GPU
+                  </button>
+
                   <button class="btn" disabled={!!sshs.busy} onclick={() => sshs.gpuStatus()}>
                     🔍 Statut Chlorophyll
                   </button>
