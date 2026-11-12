@@ -114,3 +114,41 @@ of the file) and **overrides them for the Poco F1** (`sdm845-xiaomi-beryllium-co
 * ios-topaz `0113-0130` (same stack on Redmi Note 12 4G, iOS 16): confirms the architecture and the Apple80211-ioctl route; adds nothing we lack (our chip half is further: it already has WCE/HTT details documented). Licence: **no LICENSE file** in the clone (checked `ls`); `CREDITS.md` says its HackiOS-derived kernel patches are APSL 2.0 but the rest is unlicensed => read only, do not copy.
 * HackiOS `drivers/wifi/hakios.wlfw.c`, `hakios.apple80211.c` (APSL 2.0 for `drivers/`, `LICENSE` s1; MIT for the rest): may be adapted with notices, but they target ath11k/WCN6750 (QMI wlfw v1 for HW 2.0 with different messages), so only the Apple80211 ioctl map is directly useful, and we already have it.
 * Linux (spec only): `drivers/net/wireless/ath/ath10k/{qmi.c,qmi_wlfw_v01.c,snoc.c,wmi-tlv.c,htt_rx.c}`, `drivers/remoteproc/qcom_q6v5_mss.c`, `drivers/soc/qcom/{smem,rmtfs_mem}.c`, `net/qrtr/`, `drivers/soc/qcom/qmi_interface.c`.
+
+## 2. Bluetooth (WCN3990 over UART, QCA protocol)
+
+### 2.1 Status table
+
+| Project | State |
+|---|---|
+| **Ours, iOS 18 / Poco F1** | **Works to Settings listing devices** (combo9, 2026-10-24, user-checked, `docs/WIFI_BT_IOS18.md` 2.10): kernel UART (QUP SE6 @0x898000, GPIO 45-48), RPMh rails, QCA power pulses at 2400/115200 baud, firmware download at 3 Mbaud (rampatch `crbtfw21.tlv` + `crnv21.bin`, linux-firmware), in-band-sleep, kernel control `com.apple.uart.bluetooth` (0136), BlueTool stub, AKS key wrap for bluetoothd's keychain (0238), HCI compat layer for Apple's Broadcom-assuming stack (0239 v7), Skywalk privileges for the AudioPipe nexus (0250). OBSERVED (log-quoted) |
+| Ours, 6T | **never booted.** Default image args contain no `sweetwlan=2 sweetbt=1 ...` (`tools/renegade/mkboot-full.sh` line 21 and `gpu-default-args.txt`: grep for `bt`/`wlan` empty, OBSERVED), so bluetoothd crash-loops; `FAJITA.md` "bluetoothd crash-loops: Bluetooth is not ported" is stale (it is ported, only off) |
+| Ours, 12/iOS 26 | `sweetbt=1` in args, "no new result on iOS 26" (`HANDOFF-2026-10-25.md`) |
+| HackiOS | **no** ("step one only: a read-only look at its pins", WCN6750; `drivers/bluetooth/hakios.bt.c` 6 KB) |
+| ios-topaz | **no** (README: "No Bluetooth ...; bluetoothd relaunches constantly") |
+| ch1tmdgus/ios-v60 (LG V60, QCA6390) | BT UART bring-up diagnostics + HCI version query only (`docs/FORKS_SURVEY.md` C) |
+| UniXNU / edi194 / JaneAwA | none |
+
+We are the **only project in the survey with working iOS Bluetooth**. Nobody to learn from; the spec is Linux
+`drivers/bluetooth/{btqca.c,hci_qca.c}` (GPL: idea only) and Apple's own bluetoothd behaviour (already reverse-engineered in
+`docs/BT_IOS_TRANSPORT.md`, `WIFI_BT_IOS18.md` 2.x).
+
+### 2.2 Blockers and what is partial
+
+1. **6T boot never done**; difference list is short (rails identical in Linux `sdm845-oneplus-common.dtsi`: s4a 1.8, l7a 1.8, l17a 1.3, l25a 3.3, l23a 3.3; UART `qup_uart6_4pin`, same SE6/GPIO 45-48 as beryllium; `max-speed 3200000`). Differences: the NVM file (`firmware-name = "OnePlus/enchilada/crnv21.bin"` in Linux; our root installs the generic linux-firmware `crnv21.bin` via `RENEGADE_BT_FW`), and PM8998 gpio 3 `swctrl`. INFERRED low risk; the SE6/QUP clock + RPMh code is SoC-level, not board-level.
+2. The ADT node: `tools/mkadt.py` sets `bluetooth=True` for fajita (line ~94, OBSERVED), BT MAC is a **fixed synthetic 02:00:5e:77:b0:01 for every phone** (`BT_MAC`, mkadt.py:41): two phones in one room collide; bluetoothd ignores the env address (`WIFI_BT_IOS18`/NOTES bt18: `BT_DEVICE_ADDRESS` discarded) so the controller address is set with vendor 0xfc14 by the kernel. Better: derive from the SoC serial or the phone's real `/persist` BD addr (do not read persist without user OK; AGENTS rules).
+3. **Audio over BT untested**: 0250 grants `PRIV_SKYWALK_REGISTER_USER_PIPE` so bluetoothd's AudioPipe constructor stops crashing, but "whether A2DP works end to end (the audio HAL side of the channel)" is UNVERIFIED (`WIFI_BT_IOS18` 2.12). NOTES 2026-11-12 mentions a "BT audio HAL park" in userland, i.e. the HAL side is parked, not working. Without any audio hardware driver (section 3), mediaserverd has no route; BT is the only audio sink possible early.
+4. **0239 compat layer is a set of lies** (design risk, not a bug): unknown-command and Command-Disallowed statuses are rewritten to success; vendor commands get 16 padded parameter bytes; an 800 ms watchdog fakes completion. Apple's Broadcom vendor features (multi-advertising, LE offloads, duplicate filter, RSSI thresholds) silently do nothing. Expect: background BLE scanning/advertising oddities, Continuity/AirDrop discovery not working, classic HFP/A2DP details unverified. File: `xnu/patches-11215/0239-beryllium-bt-hci-compat.patch` (`bt_local_cmds` table, watchdog).
+5. `/dev/btwake` absent (logged, harmless), 64-line HCI trace budget (`sweetbtlog`) too small, TCC identity warnings: cosmetic.
+6. Boot-arg field budget (601/608 bytes) shared with Wi-Fi: `sweetwlan=2 sweetbt=1 sweetbtfast=1 sweetbtibs=1 sweetwlandelay=30` (~65 bytes) must fit with `sweetwlan=5` Wi-Fi: **both use `sweetwlan`**: stage 2 (BT) and stage 5 (Wi-Fi service) are mutually exclusive as one integer. Needs a bitmask or separate `sweetbt=` gate that also powers the rails. INFERRED from the two docs (`WIFI_BT_IOS18` 2.2 vs `WIFI_IOS26_PHASE2` s2); on iOS 26 boot args had `sweetwlan=2` and Wi-Fi booted with other gates (`sweetwlan=4`/`5` variants) so confirm.
+7. Wi-Fi and BT share the WCN3990 rails/`ldoa7` (0117: an RPMh "off" vote panicked boot 0116hw): rail ownership must be refcounted between the BT stage and the Wi-Fi service (Linux: wcn3990-pmu regulator consumers). Not seen in code; INFERRED risk when both are enabled.
+
+### 2.3 Ordered plan
+
+| # | Step | Files | Effort | Risk | Phone? |
+|---|---|---|---|---|---|
+| 1 | Add BT args to the fajita image (`sweetwlan=2 sweetbt=1 sweetbtfast=1 sweetbtibs=1 sweetwlandelay=30`) in `tools/install/build-boot.sh fajita`; install `RENEGADE_BT_FW` firmware in the root; verify the 6T `bluetooth_a` partition NVM vs linux-firmware | `tools/renegade/mkboot-full.sh`, `tools/install/build-boot.sh`, root builder `tools.rs` `bluetooth_stub` | 0.5 d | low | yes: one boot |
+| 2 | If HCI init fails on 6T: compare NVM (`OnePlus/enchilada/crnv21.bin` from postmarketOS `firmware-oneplus-sdm845`, or the phone's partition) | 0124 | 1 d | low | yes |
+| 3 | Test pairing + A2DP/HFP with headphones; log `SWEET BT:` for rewritten opcodes; decide which Apple vendor commands deserve real emulation | 0239, `bsd/dev/beryllium_bt_hci.c` | 3-5 d | medium | yes |
+| 4 | Unique BD_ADDR (serial-derived), `/dev/btwake` stub, BT/Wi-Fi rail refcount | `tools/mkadt.py`, 0104/0117 | 1-2 d | low | yes |
+| 5 | Coexistence with Wi-Fi (`sweetwlan` split) | `beryllium_wlan.c` stage table | 1 d | medium | yes |
