@@ -1,0 +1,62 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 91a4676..36739f2 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -2508,6 +2508,8 @@ static bool a630_kept;
+ static uint32_t a630_suspends, a630_resumes, a630_recoveries;
+ static uint64_t a630_last_active;
+ static bool a630_awake;
++static bool a630_asleep;        /* 0279: slumbered by gpu_suspend: the GPU SMMU registers are not touched until gpu_resume */
++static bool a630_tlb_dirty;     /* 0279: page tables changed while asleep: invalidate at the next wake */
+ static uint32_t a630_timed;      /* last submission whose stamps were added to the busy time */
+ static bool gpu_resume(void);
+ static bool gpu_hfi_start_dcvs(bool gx_on);
+@@ -2600,6 +2602,17 @@ gvm_tlb_flush(void)
+ {
+ 	vm_offset_t b = smmu_base + SMMU_CB(CP_CB);
+ 
++	/*
++	 * 0279: not while the GPU is in slumber. Map/unmap (GEM_NEW, GEM_CLOSE, IOSurface import) arrive at any time, also
++	 * with the GMU in reset and GX off; a register write plus TLBSYNC poll into a powered-down GPU block can hang the
++	 * whole SoC on Qualcomm (no abort, no log: the freeze seen at ~460-580 s of uptime in three GPU boots, after the
++	 * slumber/wake cycles of the log). Linux does the same: arm-smmu skips the TLB invalidate of an adreno SMMU that is
++	 * not runtime-active (recalled, not re-read). The next wake invalidates everything once.
++	 */
++	if (a630_asleep) {
++		a630_tlb_dirty = true;
++		return;
++	}
+ 	gpu_wr(b, SMMU_CB_TLBIALL, 0);
+ 	(void)smmu_sync(b, SMMU_CB_TLBSYNC, SMMU_CB_TLBSTATUS);
+ }
+@@ -2731,7 +2744,7 @@ sweet_gpu_check_fault(void)
+ 	vm_offset_t b;
+ 	uint32_t fsr;
+ 
+-	if (!a630_dev.ready || !smmu_base) {
++	if (!a630_dev.ready || !smmu_base || a630_asleep) {
+ 		return false;
+ 	}
+ 	b = smmu_base + SMMU_CB(CP_CB);
+@@ -3419,6 +3432,7 @@ gpu_suspend(bool quiet)
+ 	uint32_t st = gpu_rd(gmu, GMU_RPMH_POWER_STATE);
+ 	gpu_gmu_reset();
+ 	a630_awake = false;
++	a630_asleep = true;
+ 	a630_suspends++;
+ 	a630_quiet = 0;
+ 	if (st != GPU_HW_SLUMBER) {
+@@ -3453,6 +3467,13 @@ gpu_resume(void)
+ 	gpu_hfi_table();
+ 	ok = gmu_fw && gpu_gmu_boot((const uint32_t *)gmu_fw, gmu_fw_size, false) && gpu_gx_rail_on() && gpu_sptprac(true) &&
+ 	    gpu_hfi_start_dcvs(true) && gmu_oob_set(OOB_GPU, "gpu") && gpu_cp_hw_init() && gpu_cp_start();
++	if (ok && a630_asleep) {
++		a630_asleep = false;
++		if (a630_tlb_dirty) {
++			a630_tlb_dirty = false;
++			gvm_tlb_flush();
++		}
++	}
+ 	if (ok) {
+ 		ring_emit(pkt7(CP_SET_SECURE_MODE, 1));
+ 		ring_emit(0);
