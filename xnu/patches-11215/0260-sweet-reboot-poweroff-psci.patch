@@ -2,7 +2,7 @@ diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
 index 8228f52..828452e 100644
 --- a/bsd/dev/sweet_reboot.c
 +++ b/bsd/dev/sweet_reboot.c
-@@ -129,6 +129,16 @@ SYSCTL_PROC(_kern, OID_AUTO, sweet_reboot_mode,
+@@ -129,6 +129,15 @@ SYSCTL_PROC(_kern, OID_AUTO, sweet_reboot_mode,
      CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sr_sysctl, "A",
      "Reboot mode of the next reboot: bootloader (fastboot), recovery, bergamota, normal");
  
@@ -15,10 +15,9 @@ index 8228f52..828452e 100644
 +	    "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
 +}
 +
-+/* PSCI SYSTEM_RESET (SMCCC 1.0): fallback when PS_HOLD does not reset. */
+ /* PSCI SYSTEM_RESET (SMCCC 1.0): fallback when PS_HOLD does not reset. */
  static void
  sr_psci_system_reset(void)
- {
 @@ -203,6 +212,39 @@ sweet_reboot_note_panic(void)
  	sr_in_panic = true;
  }
