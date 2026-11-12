@@ -265,7 +265,7 @@ export class SshChannel {
   }
 
   /** Writes stdin, honouring the phone's channel window (so a big upload streams instead of piling up). */
-  async write(data: Uint8Array) {
+  async write(data: Uint8Array, onProgress?: (sent: number, total: number) => void) {
     let off = 0;
     while (off < data.length) {
       if (this.closed) throw new SshError("channel closed");
@@ -277,6 +277,7 @@ export class SshChannel {
       await this.ssh.sendAsync(new W().u8(MSG.CHANNEL_DATA).u32(this.remoteId).bytes(data.subarray(off, off + n)).out());
       this.remoteWindow -= n;
       off += n;
+      onProgress?.(off, data.length);
     }
   }
 
@@ -621,7 +622,7 @@ export class SshClient {
   async run(
     command: string,
     stdin?: Uint8Array,
-    opts: { onData?: (b: Uint8Array, stderr: boolean) => void; signal?: AbortSignal; pty?: boolean } = {},
+    opts: { onData?: (b: Uint8Array, stderr: boolean) => void; signal?: AbortSignal; pty?: boolean; onProgress?: (sent: number, total: number) => void } = {},
   ): Promise<{ stdout: Uint8Array; stderr: Uint8Array; code: number | null; signal: string | null; stopped: boolean }> {
     const c = await this.openSession();
     const out: Uint8Array[] = [], err: Uint8Array[] = [];
@@ -641,7 +642,7 @@ export class SshClient {
       // a pty makes the command's stdout line-buffered (a pipe gets it in 4 KB blocks, and loses them on a kill)
       if (opts.pty) await c.pty(250, 50, "dumb");
       if (!(await c.exec(command))) throw new SshError(`the phone refused to run: ${command}`);
-      if (stdin && !stopped) await c.write(stdin);
+      if (stdin && !stopped) await c.write(stdin, opts.onProgress);
       // on a pty, EOF hangs the terminal up: the phone's dropbear then SIGHUPs the command at once
       if (!opts.pty || stdin) c.eof();
     }

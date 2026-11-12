@@ -221,13 +221,16 @@ export function installScript(app: string, appsDir = "/Applications", markerDir 
     `cd ${q(appsDir)} || exit 20`,
     `S=.bergamota-stage-$$; rm -rf "$S"; mkdir "$S" || exit 21`,
     `if [ -d ${A} ] && [ ! -e ${M} ] && grep -qa 'com\\.apple\\.' ${A}/Info.plist 2>/dev/null; then echo "refusing: ${app.replace(/"/g, "")} looks like a system app (no sideload marker, Apple bundle id)"; rm -rf "$S"; exit 22; fi`,
+    `echo "[1/4] receiving and unpacking ${app.replace(/"/g, "")}"`,
     `tar -xf - -C "$S" || { rm -rf "$S"; echo "tar failed: nothing changed"; exit 23; }`,
     `[ -d "$S"/${A} ] || { rm -rf "$S"; echo "the archive has no ${app.replace(/"/g, "")}: nothing changed"; exit 24; }`,
     `${owner ? `chown -R ${owner} "$S"/${A} && ` : ""}chmod -R u+rwX,go+rX "$S"/${A} || { rm -rf "$S"; exit 25; }`,
     `rm -rf "$S.old"; if [ -d ${A} ]; then mv ${A} "$S.old" || { rm -rf "$S"; exit 26; }; fi`,
     `if mv "$S"/${A} ${A}; then rm -rf "$S.old" "$S"; else [ -d "$S.old" ] && mv "$S.old" ${A}; rm -rf "$S"; echo "move failed: old copy restored"; exit 27; fi`,
     `mkdir -p ${q(markerDir)} && : > ${M}`,
-    `${q(uic)} ${A} 2>&1; echo "exit $?"`,
+    `echo "[2/4] installed in ${appsDir}, registering with LaunchServices"`,
+    `if command -v timeout >/dev/null 2>&1; then timeout 90 ${q(uic)} ${A} 2>&1; else ${q(uic)} ${A} 2>&1; fi; echo "[3/4] sweetuicache exit $? (124 = timed out after 90 s)"`,
+    `echo "[4/4] done"`,
   ].join("; ");
 }
 

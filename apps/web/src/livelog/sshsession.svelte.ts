@@ -352,8 +352,40 @@ class SshSession {
       }
       this.busy = `Sending ${meta.app} (${(tar.length / 1048576).toFixed(1)} MB)…`;
       // staged extract, atomic swap, system apps refused (lib/guards.ts, audit F-04)
-      const r = await this.client.run(installScript(meta.app), tar);
-      const out = new TextDecoder().decode(r.stdout) + new TextDecoder().decode(r.stderr);
+      const head = `${meta.app} (${meta.bundleId} ${meta.version}): ${meta.machos} binaries re-signed (${meta.pacRewritten} had arm64e code rewritten), ${meta.bundlesSealed} bundles sealed, ${meta.files} files\n`;
+      let live = "";
+      const dec = new TextDecoder();
+      const t0 = Date.now();
+      const sendMsg = (sent: number) => `Sending ${meta.app}: ${(sent / 1048576).toFixed(1)} / ${(tar.length / 1048576).toFixed(1)} MB (${Math.round((sent / 1048576) / Math.max(1, (Date.now() - t0) / 1000) * 10) / 10} MB/s)`;
+      let lastPaint = 0;
+      // the phone side has 90 s for sweetuicache; if nothing has come back for 150 s after the last byte, stop and say so
+      const stall = new AbortController();
+      let stallTimer: ReturnType<typeof setTimeout> | undefined;
+      const arm = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => stall.abort(), 150_000);
+      };
+      const r = await this.client.run(installScript(meta.app), tar, {
+        signal: stall.signal,
+        onProgress: (sent, total) => {
+          if (sent === total) arm();
+          if (Date.now() - lastPaint > 250 || sent === total) {
+            lastPaint = Date.now();
+            this.busy = sent === total ? `Sent ${meta.app}; the phone is unpacking and registering it…` : sendMsg(sent);
+          }
+        },
+        onData: (b) => {
+          arm();
+          live += dec.decode(b);
+          this.output = head + live;
+        },
+      });
+      clearTimeout(stallTimer);
+      this.busy = null;
+      if (r.stopped) throw new SshError(`the phone sent nothing for 150 s after the upload (last output):\n${live.trim() || "(nothing)"}\nThe app may be installed: check the home screen, or look at /Applications on the phone.`);
+      const out = live || dec.decode(r.stdout) + dec.decode(r.stderr);
+      if (r.code !== 0 && r.code !== null) throw new SshError(`the install script on the phone exited with ${r.code}:\n${out.trim()}`);
+      if (r.code === null) throw new SshError(`the connection closed before the phone finished (last output):\n${out.trim() || "(nothing)"}`);
       this.output =
         `${meta.app} (${meta.bundleId} ${meta.version}): ${meta.machos} binaries re-signed (${meta.pacRewritten} had arm64e code rewritten), ` +
         `${meta.bundlesSealed} bundles sealed, ${meta.files} files\n${out.trim()}\n` +
