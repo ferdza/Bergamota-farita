@@ -1,0 +1,20 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index e95716c..36f9ba9 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -805,6 +805,15 @@ SweetAdrenoUserClient::submit(struct sweet_msm_gem_submit *r)
+ unlock:
+ 	sweet_gpu_unlock();
+ out:
++	if (ret != kIOReturnSuccess) {
++		/* 0278: say why a submit was refused (the userland only sees "submission failed"); the first 40, then every 256th */
++		static uint32_t submit_fail_n;
++		uint32_t n = submit_fail_n++;
++		if (n < 40 || (n & 255) == 0) {
++			IOLog("SWEET GPU: SUBMIT refused #%u: 0x%x (nr_bos %u nr_cmds %u queue %u flags 0x%x ready %d)\n", n, ret,
++			    r->nr_bos, r->nr_cmds, r->queueid, r->flags, (int)sweet_gpu_ready());
++		}
++	}
+ 	if (bos != NULL) {
+ 		IOFreeData(bos, bosSize);
+ 	}

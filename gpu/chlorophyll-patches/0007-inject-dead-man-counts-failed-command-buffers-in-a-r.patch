@@ -1,0 +1,55 @@
+From 3325b29888d9ebee2d0058cbe33ba5190c15b637 Mon Sep 17 00:00:00 2001
+From: x <a@b>
+Date: Thu, 12 Nov 2026 22:17:34 +0000
+Subject: [PATCH] inject: dead-man counts failed command buffers in a row
+ (default 8, BGMTL_DEADMAN_FAILS), not 3 per boot
+
+---
+ inject/bgmtl_inject.m | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/inject/bgmtl_inject.m b/inject/bgmtl_inject.m
+index 9d9e290..bc2bf63 100644
+--- a/inject/bgmtl_inject.m
++++ b/inject/bgmtl_inject.m
+@@ -63,7 +63,7 @@ static char g_state[192] = F_STATE, g_off[192] = F_OFF;
+ // colour while Mercury kept rendering frames nobody composited.
+ static const char *const kAllow[] = { "com.apple.MercuryPoster", "com.apple.PhotosUIPrivate.PhotosPosterProvider",
+                                       "com.apple.iconservicesagent", "com.apple.springboard", "com.apple.PosterBoard", NULL };
+-static volatile int g_failures, g_registered, g_bb;
++static volatile int g_failures, g_failures_run, g_registered, g_bb;   // g_failures_run: failures since the last completed command buffer
+ static volatile unsigned g_completed;
+ 
+ static void
+@@ -145,6 +145,7 @@ bgmtl_note_present(const char *line)
+ void
+ bgmtl_note_completed(void)
+ {
++   g_failures_run = 0;   // the dead-man counts failures in a row, not over the whole boot
+    if (__sync_add_and_fetch(&g_completed, 1) == 1) {
+       if (g_bb) { ilog("backboardd: first command buffer completed"); return; }
+       write_state(0, 1);
+@@ -225,9 +226,17 @@ void
+ bgmtl_note_failure(const char *why)
+ {
+    int n = __sync_add_and_fetch(&g_failures, 1);
+-   ilog("command buffer failure %d: %s", n, why ? why : "?");
+-   if (n >= 3)
+-      trip("3 failed command buffers");
++   int run = __sync_add_and_fetch(&g_failures_run, 1);
++   // was: 3 failures over the whole boot switched Chlorophyll off until reboot, so one bad moment (a kernel refusal while
++   // the GPU woke from slumber) cost the whole session its 3D. Now: BGMTL_DEADMAN_FAILS in a row (default 8, 3 = the old rule)
++   static int limit;
++   if (!limit) {
++      const char *e = getenv("BGMTL_DEADMAN_FAILS");
++      limit = e && atoi(e) > 0 ? atoi(e) : 8;
++   }
++   ilog("command buffer failure %d (%d in a row, limit %d): %s", n, run, limit, why ? why : "?");
++   if (run >= limit)
++      trip("failed command buffers in a row");
+ }
+ 
+ // backboardd: the stricter watchdog (see the header)
+-- 
+2.43.0
+
