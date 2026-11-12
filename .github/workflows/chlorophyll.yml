@@ -16,6 +16,9 @@ on:
       patches:
         description: Apply this repository's gpu/chlorophyll-patches (texture memory pool, perf2 counters, hot-path fixes) on top; "false" builds upstream as is
         default: "true"
+      runner:
+        description: Runner label (empty = macos-26). macos-26 jobs were cancelled at exactly 15 min on 2026-11-12 (3 attempts, no log); macos-15-intel ran the xnu build for 21 min
+        default: ""
       xcode_version:
         description: Xcode on the runner (empty = the newest; Chlorophyll's Metal device needs the iOS 26 SDK, binaries still target iOS 18.0)
         default: ""
@@ -25,7 +28,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: ${{ inputs.runner || 'macos-26' }}
     timeout-minutes: 120
     env:
       WORK: ${{ github.workspace }}/work
