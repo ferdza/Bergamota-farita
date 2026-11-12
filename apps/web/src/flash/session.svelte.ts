@@ -5,7 +5,7 @@ import { ALLOWED_PARTITIONS, FastbootDevice, FastbootError, type LogKind, type P
 import { bootImage, checkImage, flash, identify, phoneProblems, SAFE_PIECE, type Checked, type PhoneInfo, type Progress } from "../lib/flasher.ts";
 import { blobSource, type ByteSource } from "../lib/sparse.ts";
 import { discardImage, fetchKey, fetchTools, keyUrls, neededBytes, Patcher, pemProblem, sshKeyProblem, storageRoom } from "../patcher/patcher.ts";
-import { writeProblems } from "../lib/guards.ts";
+import { bootSlot, writeProblems } from "../lib/guards.ts";
 import { profileForIpsw } from "../lib/profiles.ts";
 import type { BuildSummary, IpswInfo } from "../patcher/wasm.ts";
 
@@ -46,7 +46,11 @@ class Session {
 
   fb = $state.raw<FastbootDevice | null>(null);
   phone = $state.raw<PhoneInfo | null>(null);
-  phoneProblems = $state.raw<string[]>([]);
+  /** The phrase typed to accept a phone whose identity the page cannot confirm (guards.ts OVERRIDE_PHRASE). */
+  identityOverride = $state("");
+  get phoneProblems(): string[] {
+    return this.phone ? phoneProblems(this.phone, this.identityOverride) : [];
+  }
   connecting = $state(false);
   connectError = $state<string | null>(null);
 
@@ -131,7 +135,7 @@ class Session {
       this.fb = fb;
       this.phone = phone;
       this.backupAck = false;
-      this.phoneProblems = phoneProblems(phone);
+      this.identityOverride = "";
       if (this.picked) await this.recheck();
     } catch (e) {
       const err = e as Error;
@@ -380,6 +384,7 @@ class Session {
         fb,
         src: picked.src,
         partition: this.partition,
+        slot: bootSlot(this.phone ?? { currentSlot: null, slotCount: null }),
         checked,
         onProgress: (p) => (this.progress = p),
         shouldStop: () => this.stopRequested,

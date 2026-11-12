@@ -19,7 +19,7 @@ function allowed(cmd: string): boolean {
   if (/^getvar:[A-Za-z0-9_:.-]{1,58}$/.test(cmd)) return true;
   if (/^download:[0-9a-f]{8}$/.test(cmd)) return true;
   const flash = /^flash:(.+)$/.exec(cmd);
-  if (flash) return (ALLOWED_PARTITIONS as readonly string[]).includes(flash[1]);
+  if (flash) return (ALLOWED_PARTITIONS as readonly string[]).includes(flash[1]) || /^boot_[ab]$/.test(flash[1]);
   // `boot` runs the just-downloaded boot image once, without writing any partition
   // (the Mac app's Boot Queue; exactly how device bring-up uses `fastboot boot`).
   return cmd === "boot" || cmd === "reboot" || cmd === "reboot-bootloader";
@@ -199,9 +199,11 @@ export class FastbootDevice {
   }
 
   /** flash:<partition> of what was just downloaded. Only allowlisted partitions. */
-  async flash(partition: Partition): Promise<void> {
+  async flash(partition: Partition, slot?: "a" | "b"): Promise<void> {
     if (!(ALLOWED_PARTITIONS as readonly string[]).includes(partition)) throw new FastbootError(`refusing to flash ${partition}`);
-    await this.command(`flash:${partition}`, 10 * 60_000);
+    // only boot may carry a slot suffix: boot_a / boot_b, chosen by the page from `current-slot` (audit F-02)
+    if (slot && (partition !== "boot" || !/^[ab]$/.test(slot))) throw new FastbootError(`refusing to flash ${partition}_${slot}`);
+    await this.command(`flash:${partition}${slot ? `_${slot}` : ""}`, 10 * 60_000);
   }
 
   /** boot the image just downloaded, once, without flashing anything.

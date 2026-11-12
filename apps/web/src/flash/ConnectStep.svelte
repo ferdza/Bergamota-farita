@@ -1,6 +1,9 @@
 <script lang="ts">
   import { session } from "./session.svelte.ts";
   import { productName } from "../lib/flasher.ts";
+  import { identityVerdict, OVERRIDE_PHRASE } from "../lib/guards.ts";
+
+  const unverified = $derived(!!session.phone && identityVerdict({ product: session.phone.product, kind: session.phone.kind, slotCount: session.phone.slotCount, vars: session.phone.vars }).level === "unverified");
 
   const ok = $derived(!!session.phone && !session.phoneProblems.length);
   const udev = 'SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0660", TAG+="uaccess"';
@@ -28,6 +31,17 @@
     {#each session.phoneProblems as p}
       <p class="problem">{p}</p>
     {/each}
+    {#if unverified && session.phone}
+      <table class="vars">
+        <tbody>
+          {#each session.phone.vars as [k, v]}<tr><td>{k}</td><td>{v}</td></tr>{/each}
+        </tbody>
+      </table>
+      <label class="override">
+        <span>Type <b>{OVERRIDE_PHRASE}</b> to confirm this is the phone you mean</span>
+        <input bind:value={session.identityOverride} autocomplete="off" spellcheck="false" aria-label="Confirm the phone is a OnePlus 6T" />
+      </label>
+    {/if}
     {#if session.connectError}
       <p class="problem" role="alert">{session.connectError}</p>
     {/if}
@@ -50,3 +64,10 @@
     </div>
   </div>
 </section>
+
+<style>
+  .vars { font: 13px var(--mono); border-collapse: collapse; margin: 0 0 14px; }
+  .vars td { padding: 2px 14px 2px 0; vertical-align: top; word-break: break-all; }
+  .override { display: grid; gap: 8px; font-size: 15px; margin: 0 0 14px; }
+  .override input { font: 600 16px var(--mono); padding: 12px 14px; border: 2px solid var(--ink); border-radius: 4px; background: var(--white); max-width: 360px; }
+</style>

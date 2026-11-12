@@ -3,7 +3,7 @@
 // userdata / boot / logo only, boot must be an Android boot image of 1-64 MiB, logo 1-32 MiB, a root at least 64 MiB.
 
 import { FastbootDevice, FastbootError, type Partition } from "./fastboot.ts";
-import { hfsVolumeProblem } from "./guards.ts";
+import { hfsVolumeProblem, identityProblems } from "./guards.ts";
 import { parseImage, pieceBytes, planPieces, type ByteSource, type Image, type Piece } from "./sparse.ts";
 
 export const MiB = 1 << 20;
@@ -21,6 +21,7 @@ export interface PhoneInfo {
   /** getvar current-slot / slot-count (A/B phones; null when the ABL does not answer). */
   currentSlot: string | null;
   slotCount: number | null;
+  hasSlotBoot: string | null;
   partitionSize: Partial<Record<Partition, number>>;
   vars: [string, string][];
 }
@@ -41,6 +42,9 @@ export async function identify(fb: FastbootDevice): Promise<PhoneInfo> {
   const usbSpeed = bergamota ? await get("usb-speed") : null;
   const currentSlot = await get("current-slot");
   const sc = await get("slot-count");
+  const hasSlotBoot = await get("has-slot:boot");
+  // read-only extras shown to the user for the identity check (docs/audit F-01); a refusal (FAIL) is simply absent
+  for (const n of ["secure", "variant", "hw-revision", "partition-type:userdata", "partition-size:modem_a", "partition-size:bluetooth_a", "partition-size:dtbo_a"]) await get(n);
   const partitionSize: Partial<Record<Partition, number>> = {};
   for (const p of ["userdata", "boot", "logo"] as Partition[]) {
     const v = await get(`partition-size:${p}`);
@@ -57,6 +61,7 @@ export async function identify(fb: FastbootDevice): Promise<PhoneInfo> {
     usbSpeed,
     currentSlot,
     slotCount: sc ? parseNumber(sc) : null,
+    hasSlotBoot,
     partitionSize,
     vars,
   };
@@ -88,12 +93,9 @@ export function productName(product: string | null): string {
 }
 
 /** Reasons the page refuses to write to this phone at all. */
-export function phoneProblems(p: PhoneInfo): string[] {
-  const out: string[] = [];
-  if (!p.product || !(p.product in SUPPORTED_PRODUCTS)) {
-    const names = Object.values(SUPPORTED_PRODUCTS).join(" and ");
-    out.push(`Unsupported phone: it says it is "${p.product ?? "unknown"}". Bergamota supports ${names}.`);
-  }
+export function phoneProblems(p: PhoneInfo, typedOverride = ""): string[] {
+  // exact identity beyond product=sdm845 (lib/guards.ts, audit F-01); the product table above stays for the display name
+  const out: string[] = identityProblems({ product: p.product, kind: p.kind, slotCount: p.slotCount, vars: p.vars }, typedOverride);
   if (p.kind === "abl" && p.unlocked !== "yes") out.push("The bootloader is locked. Unlock it first (Xiaomi's unlock tool); a locked bootloader refuses every flash.");
   if (p.kind === "bergamota" && !p.bergamotaFlash) out.push("This Bergamota fastboot is too old to flash (no bergamota-flash). Use the phone's own fastboot: Power + Volume down.");
   return out;
@@ -155,6 +157,8 @@ export interface FlashJob {
   partition: Partition;
   checked: Checked;
   onProgress: (p: Progress) => void;
+  /** boot only: the slot `flash:boot_<slot>` names (null/undefined: a phone without slots, plain `flash:boot`). */
+  slot?: "a" | "b" | null;
   /** Checked between pieces: stop cleanly after the current one. */
   shouldStop?: () => boolean;
 }
@@ -176,7 +180,7 @@ export async function flash(job: FlashJob): Promise<boolean> {
       report("sending");
     });
     report("writing");
-    await fb.flash(partition);
+    await fb.flash(partition, partition === "boot" ? (job.slot ?? undefined) : undefined);
   }
   onProgress({ piece: checked.pieces.length, pieces: checked.pieces.length, phase: "done", sentBytes, totalBytes, startedAt });
   return true;

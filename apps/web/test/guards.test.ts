@@ -5,8 +5,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FastbootDevice } from "../src/lib/fastboot.ts";
-import { checkImage, identify } from "../src/lib/flasher.ts";
-import { appNameProblem, bundleIdProblem, confirmPhrase, hfsVolumeProblem, installScript, normalizeSlot, readExpanded, removeScript, writeProblems } from "../src/lib/guards.ts";
+import { checkImage, flash, identify, phoneProblems } from "../src/lib/flasher.ts";
+import { FastbootError } from "../src/lib/fastboot.ts";
+import { bootSlot, identityProblems, identityVerdict, OVERRIDE_PHRASE, appNameProblem, bundleIdProblem, confirmPhrase, hfsVolumeProblem, installScript, normalizeSlot, readExpanded, removeScript, writeProblems } from "../src/lib/guards.ts";
 import { bufferSource, parseImage } from "../src/lib/sparse.ts";
 import { FakePhone, makeSparse, withHfsHeader } from "./helpers.ts";
 
@@ -77,9 +78,9 @@ test("F-02: slot parsing and the phrase the user must type", () => {
 test("F-02: boot on an A/B phone with an unknown slot, and a missing backup tick, block the write", () => {
   const ab = { currentSlot: null, slotCount: 2 };
   assert.match(writeProblems("boot", ab, true)[0], /which one is active/);
-  assert.match(writeProblems("boot", { currentSlot: "a", slotCount: 2 }, false)[0], /backup box/);
+  assert.match(writeProblems("boot", { currentSlot: "a", slotCount: 2, hasSlotBoot: "yes" }, false)[0], /backup box/);
   assert.match(writeProblems("userdata", { currentSlot: "a", slotCount: 2 }, false)[0], /backup box/);
-  assert.deepEqual(writeProblems("boot", { currentSlot: "a", slotCount: 2 }, true), []);
+  assert.deepEqual(writeProblems("boot", { currentSlot: "a", slotCount: 2, hasSlotBoot: "yes" }, true), []);
   assert.deepEqual(writeProblems("userdata", { currentSlot: null, slotCount: null }, true), []);
   assert.deepEqual(writeProblems("logo", ab, false), [], "logo is not gated by the backup box");
 });
@@ -196,4 +197,80 @@ test("F-04: a marked app can be removed", () => {
   } finally {
     rmSync(s.d, { recursive: true, force: true });
   }
+});
+
+// ---- F-01: identity beyond product=sdm845 ---------------------------------------------------------------------------
+
+const SDM = { ...ABL, product: "sdm845", "slot-count": "2", "current-slot": "a", "has-slot:boot": "yes" };
+
+test("F-01: product sdm845 alone is unverified and needs the typed phrase", async () => {
+  const info = await identify(await FastbootDevice.open(new FakePhone(4096, SDM).usb()));
+  assert.equal(identityVerdict({ product: info.product, kind: info.kind, slotCount: info.slotCount, vars: info.vars }).level, "unverified");
+  const p = phoneProblems(info);
+  assert.equal(p.length, 1);
+  assert.match(p[0], /cannot confirm it is a OnePlus 6T/);
+  assert.deepEqual(phoneProblems(info, "this is a oneplus 6t"), p, "the phrase is case-sensitive");
+  assert.deepEqual(phoneProblems(info, `  ${OVERRIDE_PHRASE} `), []);
+});
+
+test("F-01: another SDM845 phone with one slot is refused outright, the override does not help", async () => {
+  const info = await identify(await FastbootDevice.open(new FakePhone(4096, { ...SDM, "slot-count": "1" }).usb()));
+  assert.match(phoneProblems(info, OVERRIDE_PHRASE)[0], /another phone/);
+});
+
+test("F-01: beryllium and Enxerto's fajita are exact, unknown products are refused", async () => {
+  const bery = await identify(await FastbootDevice.open(new FakePhone(4096, ABL).usb()));
+  assert.deepEqual(phoneProblems(bery), []);
+  const enx = await identify(await FastbootDevice.open(new FakePhone(4096, { ...ABL, product: "fajita", "version-bootloader": "bergamota-3", "bergamota-flash": "1" }).usb()));
+  assert.equal(enx.kind, "bergamota");
+  assert.deepEqual(phoneProblems(enx), []);
+  // a plain ABL claiming "fajita" is not Enxerto: not accepted without the phrase path (it is not sdm845 either)
+  const abl = await identify(await FastbootDevice.open(new FakePhone(4096, { ...ABL, product: "fajita" }).usb()));
+  assert.match(phoneProblems(abl)[0], /Unsupported phone/);
+  for (const prod of ["sagit", "enchilada", "", "SDM845", "sdm845 "]) {
+    assert.match(identityProblems({ product: prod, kind: "abl", slotCount: 2, vars: [] }, OVERRIDE_PHRASE)[0] ?? "", /Unsupported/, prod);
+  }
+  assert.match(identityProblems({ product: null, kind: "abl", slotCount: null, vars: [] }, OVERRIDE_PHRASE)[0], /unknown/);
+});
+
+test("F-01: the read-only identity variables are collected for the user to see", async () => {
+  const info = await identify(await FastbootDevice.open(new FakePhone(4096, { ...SDM, secure: "no", "partition-size:modem_a": "0x4000000" }).usb()));
+  const names = info.vars.map(([k]) => k);
+  for (const n of ["product", "secure", "slot-count", "current-slot", "has-slot:boot", "partition-size:modem_a"]) assert.ok(names.includes(n), n);
+});
+
+// ---- F-02: boot is flashed to the named slot -----------------------------------------------------------------------------
+
+test("F-02: boot goes to boot_<current-slot>, never the bare name, on an A/B phone", async () => {
+  const phone = new FakePhone(1 << 20, { ...SDM, "current-slot": "_b", "partition-size:boot": "0x100000" });
+  const fb = await FastbootDevice.open(phone.usb());
+  const info = await identify(fb);
+  const boot = new Uint8Array(200 * 1024);
+  boot.set(new TextEncoder().encode("ANDROID!"));
+  const src = bufferSource(boot);
+  const checked = await checkImage(src, "boot.img", "boot", info);
+  assert.deepEqual(checked.problems, []);
+  assert.equal(bootSlot(info), "b");
+  await flash({ fb, src, partition: "boot", checked, onProgress: () => {}, slot: bootSlot(info) });
+  assert.ok(phone.log.includes("flash:boot_b"), phone.log.join(","));
+  assert.ok(!phone.log.includes("flash:boot"));
+});
+
+test("F-02: the slot can only be attached to boot, and only a/b", async () => {
+  const phone = new FakePhone(4096, SDM);
+  const fb = await FastbootDevice.open(phone.usb());
+  // @ts-expect-error deliberately wrong
+  await assert.rejects(fb.flash("userdata", "a"), FastbootError);
+  // @ts-expect-error deliberately wrong
+  await assert.rejects(fb.flash("boot", "c"), FastbootError);
+  const cmd = (fb as unknown as { command(c: string): Promise<unknown> }).command.bind(fb);
+  for (const c of ["flash:boot_c", "flash:boot_ab", "flash:userdata_a", "flash:modem_a", "flash:boot_a "]) await assert.rejects(cmd(c), /not an allowed command/, c);
+  assert.deepEqual(phone.log, []);
+});
+
+test("F-02: has-slot:boot must be confirmed on an A/B phone", () => {
+  assert.match(writeProblems("boot", { currentSlot: "a", slotCount: 2, hasSlotBoot: null }, true)[0], /has-slot:boot/);
+  assert.deepEqual(writeProblems("boot", { currentSlot: "a", slotCount: 2, hasSlotBoot: "yes" }, true), []);
+  assert.equal(bootSlot({ currentSlot: "a", slotCount: 2, hasSlotBoot: "no" }), null);
+  assert.equal(bootSlot({ currentSlot: null, slotCount: null }), null);
 });

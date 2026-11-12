@@ -58,6 +58,13 @@ export interface SlotInfo {
   currentSlot: string | null;
   /** `getvar slot-count`; null when absent. */
   slotCount: number | null;
+  /** `getvar has-slot:boot` ("yes"/"no"); null when absent. */
+  hasSlotBoot?: string | null;
+}
+
+/** The slot `flash:boot` must name on this phone ("a"/"b"), or null for a phone without slots (plain `flash:boot`). */
+export function bootSlot(s: SlotInfo): "a" | "b" | null {
+  return isAB(s) && s.hasSlotBoot === "yes" ? normalizeSlot(s.currentSlot) : null;
 }
 
 /** "a" / "b" from the strings ABLs use ("a", "_a", "b"), or null. */
@@ -86,6 +93,8 @@ export function writeProblems(partition: string, s: SlotInfo, backupAck: boolean
   const out: string[] = [];
   if (partition === "boot" && isAB(s) && !normalizeSlot(s.currentSlot)) {
     out.push("This phone has two boot slots but did not say which one is active (getvar current-slot), so the page cannot tell you which boot partition would be overwritten.");
+  } else if (partition === "boot" && isAB(s) && s.hasSlotBoot !== "yes") {
+    out.push("This phone has two boot slots but does not confirm that boot is slotted (getvar has-slot:boot), so the page will not guess the partition name.");
   }
   if ((partition === "boot" || partition === "userdata") && !backupAck) {
     out.push(`Tick the backup box first: ${partition} is overwritten and cannot be restored from this page.`);
@@ -95,6 +104,60 @@ export function writeProblems(partition: string, s: SlotInfo, backupAck: boolean
 
 export const BACKUP_TEXT =
   "I have a backup of this phone's boot, modem, persist and Android data (docs/INSTALL.md), or I accept losing them.";
+
+// ---------------------------------------------------------------------------------------------------------------
+// F-01: which phone is this, really
+// ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * `getvar product` is the SoC ("sdm845") on the OnePlus ABL, so it cannot tell a OnePlus 6T from a OnePlus 6 or any other
+ * SDM845 phone (Lineage's board-info files use `board=sdm845` for both). No fastboot variable that separates them has
+ * been captured from a real 6T yet (docs/reference-snippets/FLASHER_GUARDS.md), so:
+ *  - "exact": the product string names the phone itself (Poco F1's "beryllium", Enxerto's own fastboot "fajita"), or the
+ *    getvar fingerprint of a captured 6T matches (FAJITA_FINGERPRINTS, empty until someone captures one);
+ *  - "unverified": product sdm845 and nothing contradicts it. Writes need the user to type OVERRIDE_PHRASE after seeing
+ *    the variables the phone answered;
+ *  - "refused": anything else, or contradicting evidence (one boot slot: the 6T is A/B).
+ */
+export interface IdentityInfo {
+  product: string | null;
+  kind: "abl" | "bergamota";
+  slotCount: number | null;
+  /** every getvar the page asked (name -> value) */
+  vars: [string, string][];
+}
+
+export type Verdict = { level: "exact"; name: string } | { level: "unverified"; name: string } | { level: "refused"; reason: string };
+
+export const OVERRIDE_PHRASE = "this is a OnePlus 6T";
+
+/** getvar fingerprints of a real, captured OnePlus 6T ABL: every listed variable must equal. Empty until captured. */
+export const FAJITA_FINGERPRINTS: Record<string, string>[] = [];
+
+export function identityVerdict(p: IdentityInfo): Verdict {
+  const v = new Map(p.vars);
+  if (p.product === "beryllium") return { level: "exact", name: "Poco F1" };
+  if (p.kind === "bergamota" && p.product === "fajita") return { level: "exact", name: "OnePlus 6T" };
+  if (p.product === "sdm845") {
+    if (p.slotCount !== null && p.slotCount < 2) return { level: "refused", reason: `It says product "sdm845" but has ${p.slotCount} boot slot(s); the OnePlus 6T is A/B. This is another phone.` };
+    if (FAJITA_FINGERPRINTS.some((f) => Object.entries(f).every(([k, val]) => v.get(k) === val))) return { level: "exact", name: "OnePlus 6T" };
+    return { level: "unverified", name: "OnePlus 6T?" };
+  }
+  return { level: "refused", reason: `Unsupported phone: it says it is "${p.product ?? "unknown"}". Bergamota supports Poco F1 and OnePlus 6T.` };
+}
+
+/** Problems for the connect step: refused phones, and unverified ones until the user typed the phrase. */
+export function identityProblems(p: IdentityInfo, typed: string): string[] {
+  const v = identityVerdict(p);
+  if (v.level === "refused") return [v.reason];
+  if (v.level === "unverified" && typed.trim() !== OVERRIDE_PHRASE) {
+    return [
+      `This phone reports "sdm845", which every OnePlus 6, 6T and other Snapdragon 845 phones do: the page cannot confirm it is a OnePlus 6T. ` +
+        `Check the variables below (Settings > About phone says "ONEPLUS A6013" on a 6T), then type "${OVERRIDE_PHRASE}" to continue.`,
+    ];
+  }
+  return [];
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // F-04: IPA install / removal must never touch system apps
