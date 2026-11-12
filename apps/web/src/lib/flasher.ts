@@ -3,6 +3,7 @@
 // userdata / boot / logo only, boot must be an Android boot image of 1-64 MiB, logo 1-32 MiB, a root at least 64 MiB.
 
 import { FastbootDevice, FastbootError, type Partition } from "./fastboot.ts";
+import { hfsVolumeProblem } from "./guards.ts";
 import { parseImage, pieceBytes, planPieces, type ByteSource, type Image, type Piece } from "./sparse.ts";
 
 export const MiB = 1 << 20;
@@ -17,6 +18,9 @@ export interface PhoneInfo {
   maxDownload: number | null;
   bergamotaFlash: boolean;
   usbSpeed: string | null;
+  /** getvar current-slot / slot-count (A/B phones; null when the ABL does not answer). */
+  currentSlot: string | null;
+  slotCount: number | null;
   partitionSize: Partial<Record<Partition, number>>;
   vars: [string, string][];
 }
@@ -35,6 +39,8 @@ export async function identify(fb: FastbootDevice): Promise<PhoneInfo> {
   const bergamota = bootloader?.startsWith("bergamota-") ?? false;
   const bergamotaFlash = bergamota && (await get("bergamota-flash")) === "1";
   const usbSpeed = bergamota ? await get("usb-speed") : null;
+  const currentSlot = await get("current-slot");
+  const sc = await get("slot-count");
   const partitionSize: Partial<Record<Partition, number>> = {};
   for (const p of ["userdata", "boot", "logo"] as Partition[]) {
     const v = await get(`partition-size:${p}`);
@@ -49,6 +55,8 @@ export async function identify(fb: FastbootDevice): Promise<PhoneInfo> {
     maxDownload: max ? parseNumber(max) : null,
     bergamotaFlash,
     usbSpeed,
+    currentSlot,
+    slotCount: sc ? parseNumber(sc) : null,
     partitionSize,
     vars,
   };
@@ -109,6 +117,10 @@ export async function checkImage(src: ByteSource, name: string, partition: Parti
   const size = src.size;
   if (partition === "userdata") {
     if (size < 64 * MiB) problems.push(`${name} is only ${fmtBytes(size)}: that is not an iOS root image.`);
+    // A finished root starts with an HFS+/HFSX volume header; a cancelled patch (zeroed sparse header) and any
+    // foreign file do not (audit F-03).
+    const bad = await hfsVolumeProblem(src, image, name);
+    if (bad) problems.push(bad);
   } else {
     if (image.sparse) problems.push(`${name} is a sparse image; ${partition} takes a plain image.`);
     if (partition === "boot") {

@@ -165,3 +165,15 @@ export class FakePhone {
     else this.reply("FAILunknown command");
   }
 }
+
+/** Stamps an HFS+ volume header signature ("H+", version 4, or "HX" 5) at byte 1024 of the first raw chunk of a sparse image
+ * made by makeSparse (whose first chunk must be `raw`): the minimum a finished iOS root has. */
+export function withHfsHeader(img: Uint8Array, kind: "H+" | "HX" = "H+"): Uint8Array {
+  const out = img.slice();
+  const dataAt = 28 + 12; // file header + first chunk header
+  out[dataAt + 1024] = kind.charCodeAt(0);
+  out[dataAt + 1025] = kind.charCodeAt(1);
+  out[dataAt + 1026] = 0;
+  out[dataAt + 1027] = kind === "H+" ? 4 : 5;
+  return out;
+}

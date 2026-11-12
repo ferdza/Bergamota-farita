@@ -4,6 +4,7 @@
 import { log } from "./logsession.svelte.ts";
 import { SshClient, SshError, type SshChannel } from "../lib/ssh.ts";
 import { planZip } from "../lib/zipinstall.ts";
+import { appNameProblem, bundleIdProblem, installScript, removeScript } from "../lib/guards.ts";
 import wasmUrl from "../patcher/renegade.wasm?url";
 import { Renegade } from "../patcher/wasm.ts";
 import { decodeConsoleRing, READ_RING_CMD, RING_BLOCKS } from "../lib/consolering.ts";
@@ -335,7 +336,8 @@ class SshSession {
     try {
       this.busy = `Preparing ${file.name} in this page (re-signing every binary)…`;
       const { tar, meta } = (await this.wasm()).prepareIpa(new Uint8Array(await file.arrayBuffer()));
-      if (!/^[A-Za-z0-9 ._+-]+\.app$/.test(meta.app)) throw new SshError(`refusing the app folder name ${JSON.stringify(meta.app)}`);
+      const bad = appNameProblem(meta.app) ?? bundleIdProblem(meta.bundleId);
+      if (bad) throw new SshError(bad);
       this.busy = "Checking the phone (tar, sweetuicache)…";
       const chk = await this.run("export PATH=$PATH:/usr/local/bin:/usr/bin:/bin; command -v tar >/dev/null && echo HAVE_TAR; [ -x /usr/local/bin/sweetuicache ] && echo HAVE_UIC");
       if (!/HAVE_TAR/.test(chk.text)) throw new SshError("this root has no tar (re-patch it with the tools bundle)");
@@ -349,11 +351,8 @@ class SshSession {
         await this.upload("/usr/local/bin/sweetuicache", uic);
       }
       this.busy = `Sending ${meta.app} (${(tar.length / 1048576).toFixed(1)} MB)…`;
-      const q = `'/Applications/${meta.app}'`;
-      const r = await this.client.run(
-        `export PATH=$PATH:/usr/local/bin:/usr/bin:/bin; cd /Applications && rm -rf ${q} && tar -xf - && chown -R 0:80 ${q} && chmod -R u+rwX,go+rX ${q} && /usr/local/bin/sweetuicache ${q} 2>&1; echo "exit $?"`,
-        tar,
-      );
+      // staged extract, atomic swap, system apps refused (lib/guards.ts, audit F-04)
+      const r = await this.client.run(installScript(meta.app), tar);
       const out = new TextDecoder().decode(r.stdout) + new TextDecoder().decode(r.stderr);
       this.output =
         `${meta.app} (${meta.bundleId} ${meta.version}): ${meta.machos} binaries re-signed (${meta.pacRewritten} had arm64e code rewritten), ` +
@@ -366,14 +365,15 @@ class SshSession {
     }
   }
 
-  /** Unregisters and deletes /Applications/NAME.app (a sideloaded app; system apps are refused by the name check only). */
+  /** Unregisters and deletes /Applications/NAME.app (a sideloaded app; system apps are refused: name deny-list plus the phone-side sideload marker, lib/guards.ts). */
   async removeApp(name: string) {
     const app = name.endsWith(".app") ? name : `${name}.app`;
-    if (!/^[A-Za-z0-9 ._+-]+\.app$/.test(app)) {
-      this.error = `odd app name ${JSON.stringify(app)}`;
+    const bad = appNameProblem(app);
+    if (bad) {
+      this.error = bad;
       return;
     }
-    await this.runStreamed(`Remove ${app}`, `/usr/local/bin/sweetuicache -u '/Applications/${app}'; rm -rf '/Applications/${app}' && echo removed '/Applications/${app}'`);
+    await this.runStreamed(`Remove ${app}`, removeScript(app));
   }
 
   /**

@@ -5,6 +5,7 @@ import { ALLOWED_PARTITIONS, FastbootDevice, FastbootError, type LogKind, type P
 import { bootImage, checkImage, flash, identify, phoneProblems, SAFE_PIECE, type Checked, type PhoneInfo, type Progress } from "../lib/flasher.ts";
 import { blobSource, type ByteSource } from "../lib/sparse.ts";
 import { discardImage, fetchKey, fetchTools, keyUrls, neededBytes, Patcher, pemProblem, sshKeyProblem, storageRoom } from "../patcher/patcher.ts";
+import { writeProblems } from "../lib/guards.ts";
 import { profileForIpsw } from "../lib/profiles.ts";
 import type { BuildSummary, IpswInfo } from "../patcher/wasm.ts";
 
@@ -78,6 +79,8 @@ class Session {
   checking = $state(false);
   checkError = $state<string | null>(null);
 
+  /** The "I have a backup" box of the Confirm step (audit F-02); reset whenever the phone or partition changes. */
+  backupAck = $state(false);
   pieceCap = $state(SAFE_PIECE);
   rebootWhenDone = $state(true);
   // the Flash screen is shared by two operations: writing a partition, and booting an image once (no write)
@@ -127,6 +130,7 @@ class Session {
       const phone = await identify(fb);
       this.fb = fb;
       this.phone = phone;
+      this.backupAck = false;
       this.phoneProblems = phoneProblems(phone);
       if (this.picked) await this.recheck();
     } catch (e) {
@@ -305,6 +309,7 @@ class Session {
   async setPartition(p: Partition) {
     if (!(ALLOWED_PARTITIONS as readonly string[]).includes(p)) return;
     this.partition = p;
+    this.backupAck = false;
     await this.recheck();
   }
 
@@ -355,6 +360,8 @@ class Session {
   async startFlash() {
     const { fb, picked, checked } = this;
     if (!fb || !picked || !checked || checked.problems.length || this.phoneProblems.length) return;
+    // the same gate the Confirm step shows, enforced here too (slot known, backup box ticked)
+    if (this.phone && writeProblems(this.partition, this.phone, this.backupAck).length) return;
     this.op = "flash";
     this.flashState = "flashing";
     this.flashError = null;

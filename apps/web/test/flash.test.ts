@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { FastbootDevice, FastbootError } from "../src/lib/fastboot.ts";
 import { checkImage, flash, identify, phoneProblems } from "../src/lib/flasher.ts";
 import { bufferSource } from "../src/lib/sparse.ts";
-import { applyImage, FakePhone, makeSparse } from "./helpers.ts";
+import { applyImage, FakePhone, makeSparse, withHfsHeader } from "./helpers.ts";
 
 const ABL = { product: "beryllium", unlocked: "yes", "version-bootloader": "unknown", "max-download-size": "0x10000", "partition-size:userdata": "0x400000", "partition-size:boot": "0x4000000" };
 
@@ -14,7 +14,7 @@ test("end to end: a sparse root goes onto userdata through a fake ABL", async ()
   assert.equal(info.kind, "abl");
   assert.deepEqual(phoneProblems(info), []);
   assert.equal(info.maxDownload, 0x10000);
-  const img = makeSparse([{ type: "skip", blocks: 10 }, { type: "raw", blocks: 50 }, { type: "fill", blocks: 300 }, { type: "skip", blocks: 600 }, { type: "raw", blocks: 64 }]);
+  const img = withHfsHeader(makeSparse([{ type: "raw", blocks: 5 }, { type: "skip", blocks: 10 }, { type: "raw", blocks: 50 }, { type: "fill", blocks: 300 }, { type: "skip", blocks: 595 }, { type: "raw", blocks: 64 }]));
   const src = bufferSource(img);
   // a 64 MiB minimum applies to real roots; this test image is tiny, so only check the plan and flash
   const checked = await checkImage(src, "test.simg", "userdata", info);
@@ -81,7 +81,7 @@ test("stop after the current piece", async () => {
   const phone = new FakePhone(1024 * 4096, ABL);
   const fb = await FastbootDevice.open(phone.usb());
   const info = await identify(fb);
-  const img = makeSparse([{ type: "raw", blocks: 100 }]);
+  const img = withHfsHeader(makeSparse([{ type: "raw", blocks: 100 }]));
   const src = bufferSource(img);
   const checked = await checkImage(src, "t.simg", "userdata", info);
   checked.problems = [];

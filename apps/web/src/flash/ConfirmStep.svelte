@@ -1,6 +1,7 @@
 <script lang="ts">
   import { session } from "./session.svelte.ts";
   import { fmtBytes, fmtDuration, productName } from "../lib/flasher.ts";
+  import { BACKUP_TEXT, confirmPhrase, normalizeSlot, writeProblems } from "../lib/guards.ts";
 
   let typed = $state("");
   const c = $derived(session.checked!);
@@ -13,7 +14,11 @@
     boot: ["This replaces the boot partition with Enxerto.", "The phone will start Bergamota's bootloader instead of Android's kernel. Nothing else is touched."],
     logo: ["This replaces the boot splash.", "Only the logo partition is written."],
   };
-  const ready = $derived(typed.trim() === session.partition && !!c && !c.problems.length && !session.phoneProblems.length && !!session.fb);
+  const phrase = $derived(confirmPhrase(session.partition, phone));
+  const gate = $derived(writeProblems(session.partition, phone, session.backupAck));
+  const needsBackup = $derived(session.partition === "boot" || session.partition === "userdata");
+  const slot = $derived(normalizeSlot(phone.currentSlot));
+  const ready = $derived(typed.trim() === phrase && !gate.length && !!c && !c.problems.length && !session.phoneProblems.length && !!session.fb);
   // Booting a boot image writes nothing, so it needs no typed confirmation — just a valid image on a connected phone.
   const canBoot = $derived(session.partition === "boot" && !!c && !c.problems.length && !session.phoneProblems.length && !!session.fb);
 </script>
@@ -26,7 +31,7 @@
   <table class="summary">
     <tbody>
       <tr><td>Phone</td><td>{productName(phone.product)} ({phone.product}), {phone.kind === "bergamota" ? `Bergamota fastboot ${phone.bootloader}` : "ABL fastboot"}</td></tr>
-      <tr><td>Partition</td><td>{session.partition}{phone.partitionSize[session.partition] ? ` · ${fmtBytes(phone.partitionSize[session.partition]!)}` : ""}</td></tr>
+      <tr><td>Partition</td><td>{session.partition === "boot" && slot ? `boot (the active slot: ${phrase})` : session.partition}{phone.partitionSize[session.partition] ? ` · ${fmtBytes(phone.partitionSize[session.partition]!)}` : ""}</td></tr>
       <tr><td>Image</td><td>{session.picked?.name} · {fmtBytes(session.picked?.size ?? 0)}{c.image.sparse ? " sparse" : ""}</td></tr>
       <tr><td>Sent as</td><td>{c.pieces.length === 1 ? "one piece" : `${c.pieces.length} pieces of up to ${fmtBytes(Math.max(...c.pieces.map((p) => p.bytes)))}`}</td></tr>
       <tr><td>Estimated time</td><td>about {fmtDuration(eta)} at 36 MB/s</td></tr>
@@ -43,10 +48,18 @@
     </div>
   {/if}
 
+  {#if needsBackup}
+    <label class="backup">
+      <input type="checkbox" bind:checked={session.backupAck} />
+      <span>{BACKUP_TEXT}</span>
+    </label>
+  {/if}
+  {#each gate.filter((g) => !/backup box/.test(g)) as g}<p class="problem">{g}</p>{/each}
+
   <label class="type">
-    <span>{session.partition === "boot" ? "Or write it for good — type" : "Type"} <b>{session.partition}</b> to confirm</span>
+    <span>{session.partition === "boot" ? "Or write it for good — type" : "Type"} <b>{phrase}</b> to confirm</span>
     <span class="confirm-row">
-      <input bind:value={typed} autocomplete="off" spellcheck="false" aria-label={`Type ${session.partition} to confirm`} />
+      <input bind:value={typed} autocomplete="off" spellcheck="false" aria-label={`Type ${phrase} to confirm`} />
       <button class="btn danger" disabled={!ready} onclick={() => session.startFlash()}>Flash {session.partition}</button>
     </span>
   </label>
@@ -61,6 +74,8 @@
   .test-txt b { font-size: 17px; }
   .test-txt span { font-size: 14px; color: var(--ink-soft); }
   .test .btn { white-space: nowrap; }
+  .backup { display: flex; gap: 12px; align-items: flex-start; margin: 0 0 16px; font-size: 15px; }
+  .backup input { flex: none; min-width: 0; width: 20px; height: 20px; margin-top: 2px; padding: 0; }
   .type { display: grid; gap: 8px; font-size: 15px; }
   .confirm-row { display: flex; gap: 14px; flex-wrap: wrap; }
   input { flex: 1; min-width: 180px; font: 600 16px var(--mono); padding: 14px 16px; border: 2px solid var(--ink); border-radius: 4px; background: var(--white); }
