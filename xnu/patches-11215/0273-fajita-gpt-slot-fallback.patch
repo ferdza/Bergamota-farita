@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 27caa07..34d0599 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -935,8 +935,45 @@ ufs_gpt_find_on_lun(const char *want, uint64_t *first, uint64_t *nblocks)
+ }
+ 
+ /* Caller holds sweet_ufs_lock. */
++static int ufs_part_locate_exact(const char *want, uint8_t *lun, uint64_t *first, uint64_t *nblocks);
++
++/*
++ * Exact GPT name first. On the OnePlus 6T (A/B: modem_a, bluetooth_a, ...; AUDIT_BOOT_CHAIN F-32 /
++ * AUDIT_WIRELESS_AUDIO D2) a name without a slot suffix that is not found is retried as "<name>_a" and the alias is
++ * cached under the original name. Read-only lookups; fajita only, so Poco F1 (non-A/B) and sweet behave as before.
++ * The slot is a guess ("_a": the firmware blobs are identical in both slots on a healthy phone); the live
++ * androidboot.slot_suffix is not parsed yet. The "_a" names themselves are UNVERIFIED (no GPT dump of a 6T seen).
++ */
+ static int
+ ufs_part_locate(const char *want, uint8_t *lun, uint64_t *first, uint64_t *nblocks)
++{
++	int error = ufs_part_locate_exact(want, lun, first, nblocks);
++	size_t n = strlen(want);
++	if (error != ENOENT || !sweet_board_fajita() || n < 2 || n + 3 > sizeof(part_cache[0].name) ||
++	    (want[n - 2] == '_' && (want[n - 1] == 'a' || want[n - 1] == 'b'))) {
++		return error;
++	}
++	char alt[sizeof(part_cache[0].name)];
++	strlcpy(alt, want, sizeof(alt));
++	strlcat(alt, "_a", sizeof(alt));
++	error = ufs_part_locate_exact(alt, lun, first, nblocks);
++	if (!error) {
++		printf("SWEET UFS: partition \"%s\" not found, using \"%s\"\n", want, alt);
++		if (part_cache_n < PART_CACHE_N) {
++			strlcpy(part_cache[part_cache_n].name, want, sizeof(part_cache[0].name));
++			part_cache[part_cache_n].lun = *lun;
++			part_cache[part_cache_n].first = *first;
++			part_cache[part_cache_n].nblocks = *nblocks;
++			part_cache_n++;
++		}
++	} else {
++		error = ENOENT;
++	}
++	return error;
++}
++
++static int
++ufs_part_locate_exact(const char *want, uint8_t *lun, uint64_t *first, uint64_t *nblocks)
+ {
+ 	for (unsigned i = 0; i < part_cache_n; i++) {
+ 		if (strcmp(part_cache[i].name, want) == 0) {
