@@ -8,6 +8,23 @@
 
   const supported = patcherSupported();
   let now = $state(performance.now());
+  // something to read during the long wait: a rotating line, nothing functional
+  const FUN = [
+    "Peeling pointer authentication off every binary, one by one…",
+    "Teaching an iPhone XR that it lives in a OnePlus now…",
+    "Convincing dyld that the shared cache is a perfectly normal Tuesday…",
+    "Folding sixteen kilobytes of page into four: origami for kernels…",
+    "Polishing the Adreno 630 so it shines in Metal…",
+    "Signing everything ad hoc, with a very steady hand…",
+    "Counting to 15 GiB, in HFS+…",
+    "Making the little cores feel included…",
+  ];
+  let funAt = $state(0);
+  $effect(() => {
+    if (session.patchState !== "running") return;
+    const t = setInterval(() => (funAt = (funAt + 1) % FUN.length), 7000);
+    return () => clearInterval(t);
+  });
   $effect(() => {
     if (session.patchState !== "running") return;
     const t = setInterval(() => (now = performance.now()), 500);
@@ -71,10 +88,11 @@
       <i style="width: {Math.min(100, ((Math.max(at, 0) + (session.patchStage === 'seal' ? frac : 0)) / PATCH_STAGES.length) * 100)}%"></i>
     </div>
     <p class="muted note" aria-live="off">{session.patchNote}</p>
+    <p class="fun" aria-hidden="true">{FUN[funAt]}</p>
     <div class="meta"><span>{session.patchBytes.total ? `${fmtBytes(session.patchBytes.done)} of ${fmtBytes(session.patchBytes.total)}` : "working"}</span><span>{fmtDuration(elapsed)}</span></div>
     <div class="row"><button class="btn ghost" onclick={() => session.cancelPatch()}>Cancel</button></div>
   {:else if session.patchState === "done"}
-    <h2 id="patch-title">The root is ready.</h2>
+    <h2 id="patch-title">The root is ready. Fresh out of the oven.</h2>
     <p>
       {session.patchInfo ? `iOS ${session.patchInfo.version} (${session.patchInfo.build}) for ${session.patchInfo.device}` : "The root"} is in this browser as <code>{session.picked?.name}</code>{#if session.picked} ({fmtBytes(session.picked.size)}){/if}. Next, connect the phone.
     </p>
@@ -119,6 +137,7 @@
   .live li.now { color: var(--ink); font-weight: 800; }
   .bar { height: 14px; background: #dddbd0; border-radius: 999px; overflow: hidden; margin: 22px 0 14px; }
   .bar i { display: block; height: 100%; background: var(--leaf); border-radius: 999px; transition: width 400ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+  .fun { margin: 0 0 10px; font-style: italic; color: var(--ink-soft); min-height: 1.4em; }
   .note { margin: 0 0 10px; font: 400 13px var(--mono); overflow-wrap: anywhere; }
   .meta { display: flex; justify-content: space-between; font: 400 14px var(--mono); color: var(--ink-soft); font-variant-numeric: tabular-nums; }
 </style>
