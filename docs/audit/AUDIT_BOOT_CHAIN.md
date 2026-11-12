@@ -170,3 +170,134 @@ Findings F-24 onward (ABL, install path, ADT, other projects) follow in later se
 - `build.sh` has no `-Werror`, does not run `inflate_test.c`, and runs the host tests only as part of the image build (so a machine without `aarch64-linux-gnu-gcc` cannot run
   the 511 protocol tests). Fix: a separate host-only test target with ASan/UBSan (this audit ran exactly that: clean). `--os_version 16.0.0 --os_patch_level 2025-06` are hard-coded:
   UNVERIFIED whether the 6T ABL compares them with rollback state for `fastboot boot` (see section 2).
+
+## 2. Boot chain on the OnePlus 6T (stock ABL, A/B, CrashDump)
+
+What is known (sources: repo notes = OBSERVED on the user's 6T; web = third-party forum/blog text, not official Qualcomm/OnePlus documents):
+
+- ABL starts Enxerto from `fastboot boot` (header v1, gzip'd Image with the DTB appended; `build.sh`). The 6T is A/B: no `recovery` partition, TWRP-style images are
+  run with `fastboot boot` (web: LineageOS/XDA guides, search results). Enxerto is entered at EL1, MMU off, x0 = ABL-patched DTB (NOTES: observed). The Qualcomm
+  hypervisor owns EL2, so there is nothing to hand over (see F-13).
+- The boot.img DTB is SoC-only; board nodes live in the DTBO (docs/FAJITA.md, OBSERVED). Enxerto only needs `/chosen`, `/memory`, the splash carve-out and IMEM
+  from it, and the kernel gets the ADT, so the DTBO matters little (F-27).
+- A reset after a non-Android OS lands in Qualcomm CrashDump (FAJITA.md OBSERVED; also a Windows-on-6T report: "shutting down still triggered CrashDump",
+  edk2-porting/WOA-Drivers issue 26, web). Downstream `msm-poweroff.c` sets the download-mode cookie in IMEM (`qcom,msm-imem-download_mode`, magic words
+  0xE47B337D / 0xCE14091A in older trees) only for panics or `RESTART_DLOAD`, and writes zeros to clear it on every other restart and on power-off (web: Android
+  kernel/msm `msm-poweroff.c` fragments). XNU never writes those zeros. INFERRED: this is why any reset on the 6T ends in CrashDump. The exact IMEM offset on SDM845 is
+  UNVERIFIED here: read the `qcom,msm-imem-download_mode` node of a running Android 6T.
+
+### F-24 (P1) No clean power-off or return-to-ABL path anywhere
+- Where: `fastboot.c` handles `reboot`, `reboot-bootloader`, `continue` only; Enxerto has no `PSCI SYSTEM_OFF` (0x84000008) and no `oem poweroff`; kernel `PE_halt_restart` for off is
+  patch 0260 (NOTES 2026-11-12, "not redone, unverified").
+- Why: the only way to turn the phone off from Enxerto fastboot or a panic screen is a long Power press, i.e. a hard reset, i.e. CrashDump plus HFS+ damage risk (F-01).
+- Fix: `oem poweroff` (SYSTEM_OFF, after clearing the cookie as in F-01) and `oem reboot-android` (cookie cleared, restart reason 0, PON spare 0). Effort: 0.5 day once the cookie is known.
+
+### F-25 (P1) Never relock; the unlocked-bootloader assumption is load-bearing
+- Where: `fastboot.c` reports `unlocked yes`, `secure no` unconditionally; `build.sh` makes an unsigned boot.img (no AVB footer). UNVERIFIED on hardware but standard
+  AVB behaviour: a locked bootloader rejects `fastboot boot` of an unsigned image, and relocking with modified `boot`/`userdata` is the classic brick. The runbook must say "do not run
+  `fastboot flashing lock` / `fastboot oem lock`".
+- Fix: Enxerto should read the real lock state from ABL's cmdline (`androidboot.verifiedbootstate=orange`, `androidboot.flash.locked=0`) and refuse writes if it is
+  not as expected; the web flasher must not offer "relock". Effort: 1 hour.
+
+### F-26 (P2) A/B slot state is invisible to the install path
+- Where: `docs/INSTALL.md`, `apps/web` flasher, `fastboot.c` (`slot-count 0`). Web (Sailfish OS forum, via search): on the 6T `fastboot boot` of a recovery image works reliably only
+  with a matching active slot ("confirm slot B is active, then fastboot boot"), and a TWRP image after an OxygenOS 11 update dropped into CrashDump (XDA crDroid thread, via search).
+  INFERRED: the DTBO/firmware ABL picks follows the active slot; a half-updated device (slot A new, slot B old) may behave differently for `fastboot boot`.
+  Also INFERRED (general A/B behaviour, not 6T-specific): booting Android repeatedly with an iOS `userdata` consumes the slot's retry counter and may flip slots.
+- Fix: record `fastboot getvar current-slot` and `slot-successful:a/b` into the install log before touching anything; in the runbook add `fastboot --set-active=<slot>` back to the slot
+  that was active. Effort: 1 hour. UNVERIFIED on the user's phone.
+
+### F-27 (P2) `fastboot boot` with a header-v1 image has no DTBO of its own
+- Where: `build.sh` (`mkbootimg --header_version 1`, no `--recovery_dtbo`). ABL applies a DTBO (the board/touch nodes, per FAJITA.md); which DTBO it applies for a header-v1
+  `fastboot boot` image (the active slot's `dtbo_a/b`, or none) is UNVERIFIED. Enxerto's own needs (splash 0x9d400000, IMEM) are in the SoC DTB, which explains why it works.
+- Why it matters: if Enxerto ever starts reading `/memory` or `/reserved-memory` for F-04 it must handle both the overlaid and the bare tree.
+- Fix: dump the DTB Enxerto receives (`oem dtb` returning the blob over `upload`) on a real 6T once and commit the sanitized `/memory`/`/reserved-memory` summary. 2 hours.
+
+### F-28 (P2) Hard-coded identity of the fastboot device
+- Where: `fastboot.c` (`serialno` = bergamota0001, `unlocked yes`, `secure no`, `version-bootloader` bergamota-2), `usb_dwc3.c` descriptors, CDC-ECM MAC 02:00:5e:77:ee:01.
+  Two phones on one host collide for `-s` selection and the host MAC/IP (192.168.7.x). Fix: derive the serial from the SoC serial (`androidboot.serialno` in the ABL cmdline). 1 hour.
+
+### F-29 (P1) Unjournaled HFS+ plus hard resets is the real data-loss mechanism
+- Where: Renegade's root writer (HFSX, unjournaled; FAJITA.md "Known issues", NOTES 2026-11-04 "HFSINC": 120 inconsistencies after repeated hard resets).
+  The upstream ios-sweet line built its root journaled (`mkfs.hfsplus -J`, "Image v4 (JOURNALED)" in the reference clone `urielc918_ios-switch/docs/upstream/NOTES-sweet.md`).
+- Why: until F-01/F-24 are fixed, every panic, every CrashDump and every long Power press is a hard reset.
+- Fix: write the journal header in Renegade's HFS writer (or run `fsck.hfsplus` from Enxerto-side tooling before first boot), and add a clean `sync` + `reboot` before any Enxerto
+  reset when iOS is running. Effort: 2-4 days for a journal; 1 day for an fsck-on-install step.
+
+### F-30 (P2) Install erases the Android data without a restore plan in the tools
+- Where: `docs/INSTALL.md` step 1 ("erases Android's data, nothing else is written"), AGENTS.md (user approved; confirm each destructive step). Android's `boot_a/b`, `system`, `vbmeta`, `persist`, `modem`
+  stay intact, so Android itself is recoverable (it will offer a data reset / boot recovery). Not covered: the `metadata` partition and Android keystore state may refer to the erased `userdata` (INFERRED);
+  and the AGENTS.md rule to preserve partition backups needs the backup to exist before the flash. Fix: the flasher should refuse to flash `userdata` until a backup of `persist`, `modem*`, `efs`
+  (`fsg`, `modemst1/2`) exists in `backup/` (web: Windows-on-6T maintainers say LTE needs QCN/EFS backups before replacing the OS). 2 hours.
+
+### Risks of the current `fastboot boot` + userdata install (summary)
+1. Android is untouched except `userdata`; a power cycle returns to Android's ABL path (safe by design). OBSERVED design.
+2. A failed `fastboot boot` lands in CrashDump or in ABL fastboot (web: "phone sits on the fastboot screen and does nothing" after a bad `fastboot boot`).
+3. Interrupting the 15 GB `userdata` write leaves a half-written HFS+ (not a brick, re-flash).
+4. Everything after the first boot depends on F-01/F-29.
+
+## 3. ADT generation (`tools/mkadt.py`, `tools/mkpayload.py`)
+
+Run here: `mkadt.py --board fajita --highmem --display-scale 3` and `--board beryllium` produce 10780 / 10764 byte trees (no /product: the D22AP seed is an Apple
+artifact kept out of git, absent here). A diff against the real iPhone10,3 D22AP tree or other projects' ADTs **could not be done in this sandbox** (UNVERIFIED);
+the method is given in F-39.
+
+### F-31 (P1) `mkadt.py` succeeds (exit 0) without `/product`
+- Where: `d22ap_product()` prints `warning: ... missing, no /product node` and returns None; `build()` then writes a tree without `/product` and the script exits 0 (OBSERVED: I ran it).
+  Without `/product` MobileGestalt has no device class/artwork/home-button data and the userland misbehaves in ways that look like unrelated crashes. Today `mkboot-full.sh`/`build-boot.sh`
+  would carry on and produce a flashable image. FAJITA.md tells the user "no 'no /product node' warning" by eye.
+- Fix: exit non-zero unless `--allow-no-product`; size-check the ADT (~13.4 KB expected). 10 minutes.
+
+### F-32 (P1) Kernel RAM window is hard-coded, not derived from the phone
+- Where: `mkadt.py`: `HIGH_PHYS_BASE 0x100000000`, `HIGH_MEM_SIZE 0xfcc00000` (all DDR above 4 GiB, derived from the **Poco F1** live FDT), fajita low window `mem=(0x9f800000, 0x0f800000)` with the comment
+  "RE-VERIFY against fajita's live FDT". The payload (`mkpayload.py`) copies it into `phys_base`/`mem_size`; Enxerto trusts it (F-04). The repo notes disagree about the F1's own layout
+  (`<0x80000000 2G>,<0x1_00000000 0xfcc00000>` vs `<0x80000000 0xc0000000>,<0x1_40000000 0xbd4a0000>`), and the OnePlus 6T ships in 6 GB and 8 GB variants (INFERRED from
+  retail specs; not in the repo). A window larger than the phone's DRAM or covering a carve-out is a wild write to protected memory: CrashDump.
+- Fix: have Enxerto compute `dram-base/size` at boot from the ABL DTB `/memory` minus `/reserved-memory`, and patch the ADT (and boot_args) in place before copying it (UniXNU patches the DTB at boot, see section 4);
+  keep the build-time value only as a cross-check that refuses to boot on mismatch. Effort: 1 day. Reference: UniXNU `DarwinBoot` window validation.
+
+### F-33 (P2) `random-seed` is fixed per image
+- Where: `mkadt.py`: `seed = os.urandom(256)` at build time; Enxerto copies the ADT verbatim. Every boot of one image gets the same seed. XNU mixes other entropy later, but early
+  ASLR/stack-protector/kernel PRNG state is deterministic per image. Fix: Enxerto overwrites the 256 bytes at boot (cntpct jitter, the SoC PRNG block, UFS serial, ABL's `androidboot.*` hashes
+  through BLAKE2b). 2 hours.
+
+### F-34 (P2) Identity mismatch: iPhone X (A11) tree under an iPhone XR (A12) iOS 18 root
+- Where: `IDENTITIES['d22ap']` (iPhone10,3, `chip-id 0x8015`), `FAJITA.md`: "iOS 18 boots with the iPhone X identity" while the root is iPhone11,8 (XR, A12, 0x8020). iOS 18 does not support the iPhone X.
+  OBSERVED to boot to SpringBoard; INFERRED risks: `SupportedProductTypes`/`SupportedDeviceTypes` checks (softwareupdated, MobileAsset, restore), MobileGestalt keys derived from `chip-id`/`board-id`
+  (`mkpayload.py` adds `board-id 6` = D22AP BDID), Image4/trust paths keyed on chip. Fix: build an `n841ap`/iPhone11,8 identity (tree from the iPhone11,8 IPSW, same method as `n104ap`) and A/B test.
+  Effort: 1 day. Reference: `IDENTITIES` already supports `n104ap`.
+
+### F-35 (P2) fajita framebuffer carve-out size is copied from beryllium
+- Where: `BOARDS['fajita']['fb'] = (0x9d400000, 0x2400000)` (36 MiB); `board.h` has the same base. Base is "confirmed in the stock DTB"; the size is "verified against the iOS-16 fajita port's mkadt", not
+  against the 6T stock DT. If the real `cont_splash` region is smaller, the kernel's framebuffer/scan-out (up to 1125x2436x4 backing plus copies) can write past it. UNVERIFIED. Fix: read the size from the
+  DTB (`cont_splash_region` `reg`) in Enxerto and patch `sweet-fbcon`. 1 hour.
+
+### F-36 (P3) Synthetic identifiers are identical on every phone
+- `SWEET_ECID`, the Wi-Fi/Bluetooth MACs (`...:e0:02`, `...:b0:01`), CDC-ECM MAC and 192.168.7.0/24: two phones on one LAN or one USB host collide; `IOPlatformUUID` is derived from the ECID so
+  all phones share a "unique" id (CFPreferences ByHost files, keychain-like state). Fix: derive them from the SoC serial in Enxerto's ADT patch step (F-32). 1 hour.
+
+### F-37 (P2) `mkpayload.py` truncates the boot-args silently
+- Where: `cl = cmdline.encode()[:BOOT_LINE_LENGTH - 1]` (607). `mkboot-full.sh` guards its own default (hard error above 607) but any other caller gets a cut-off last argument (an incomplete
+  `sweetdenypath=` or `rootrw=` changes behaviour). Fix: raise instead of truncate. 5 minutes.
+
+### F-38 (P3) `mkpayload.py` validation
+- Uses `assert` for format checks (disabled under `python -O`), takes the entry only from `LC_UNIXTHREAD`, and does not check that the kernel plus ADT fit inside `mem_size`, or that segments do not overlap.
+  The loader repeats most checks (good) but only for downloads (F-03/F-04). Fix: real exceptions plus overlap/fit checks, mirrored from `loader_check`. 1 hour.
+
+### F-39 (P2) Missing-property audit against a real D22AP tree has never been automated
+- The ADT is "the minimum that boots" (mkadt.py header). Properties real iBoot trees carry that iOS 18 may read are found one crash at a time (cryptexd/libimage4 needed `/chosen/manifest-properties`,
+  mobileactivationd needed the security tuple, `/sbin/mount -P 1` needed `boot-manifest-hash`, per the code comments). Method to close it: (1) dump the real D22AP/N841AP trees with `tools/adt.py`
+  (`research/` copies; Apple artifacts, not in git); (2) extract every `IORegistryEntryFromPath`/`IODeviceTree:` string and `PE_get_default`/`DTGetProperty`/`SecureDTLookupEntry` name from the shared cache and the
+  XNU patches (`xnu/patches-11215`); (3) report properties present in the real tree and read by the above but absent in ours. Effort: 1-2 days. Output: a checked-in list of "known-needed" properties and a test in
+  `tools/validate-repo.py`.
+
+### F-40 (P3) `--lowpool` refuses the 6T
+- `mkadt.py` rejects `--lowpool` unless `board == 'beryllium'`, yet docs mention zero-copy scan-out on fajita (`sweetfb_zc`). Today the kernel default (0xb0400000 + 252 MiB) is used; that
+  overlaps the Enxerto download buffer (0xb8000000 + 1 GiB) only while the buffer is alive (OBSERVED in the comments, fine). Fix: allow `fajita` once the 6T carve-outs are verified (F-32/F-27).
+
+### Highmem and display-scale logic (reading notes, OBSERVED)
+- `--highmem` selects the upper DDR bank for the kernel (3.95 GiB) and leaves the whole low bank to ABL/TZ/carve-outs and to Enxerto's download buffer, which is why the loader refuses a payload that overlaps
+  `[phys_base, +mem_size)` (`loader_check`). Without `--highmem` the kernel lives in a 248 MiB low window: too small for iOS 18 (FAJITA.md always uses `--highmem`). Make `--highmem` the only supported mode for iOS 18
+  or fail loudly.
+- `canvas = points x scale` (375x812 @3x = 1125x2436) is scaled onto the 1080x2340 panel by the kernel; aspect error 0.07 % (OK). `sweet-fbcon` (`reg/width/height/stride`) and `board.h` must change
+  together: a single source of truth (generate `board.h` values from `BOARDS`) would remove that drift risk. 1 hour.
