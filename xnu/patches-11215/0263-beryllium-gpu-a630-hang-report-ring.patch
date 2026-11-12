@@ -1,0 +1,79 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 2c787ab..91a4676 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -313,6 +313,7 @@ static uint64_t gov_boost_until;        /* mach time until which the interactive
+ static uint32_t a630_boost_level = 3;   /* sweetgpuboost=N: floor while a client submits frequently (0 = off) */
+ static uint32_t a630_hb_s;              /* sweetgpuhb=SECONDS: heartbeat line with GPU + USB clock state */
+ static uint32_t a630_ramp_ms = 24;      /* sweetgpuramp=MS: governor fast up-ramp window (0 = off, 8..200); see gpu_gov_fast_ramp() */
++static uint32_t a630_diag = 1;         /* sweetgpudiag=0: no ring/IB2 dump in the hang report (0263) */
+ static uint32_t a630_wait_us = 200;      /* sweetgpuwaitus=US: poll interval of a fence wait after its 2 ms spin (0 = the old 1 ms IOSleep) */
+ static uint32_t a630_recover_max = 3;   /* sweetgpurecover=N: resets after a fault/hang before "lost until reboot" */
+ static uint32_t a630_bw_linux;          /* sweetgpubw=linux: the fixed Linux a630 BCM addresses instead of cmd-db's */
+@@ -2922,6 +2923,44 @@ sweet_gpu_debug(uint32_t *w)
+ 	}
+ }
+ 
++/*
++ * 0263: what the ring says about a hang or fault, read from the kernel's own ring memory (no GPU register is touched
++ * here). Prints the 16 dwords around the CP's read pointer, and every CP_INDIRECT_BUFFER packet in the ring that either
++ * is the IB the CP reports as current (ib1) or covers the faulting address (far, when the SMMU latched one): that
++ * names the submission (and, with the seqno of the CACHE_FLUSH_TS after it, the client's frame) that was running. The
++ * scan is a plain walk of RING_SIZE/4 dwords, at most 4 lines printed. Only the packet header value the driver emits
++ * itself (pkt7(CP_INDIRECT_BUFFER, 3)) is matched, so a data word that looks like one is the only false positive.
++ */
++static void
++gpu_report_ring(const char *why, uint32_t rptr, bool have_far, uint64_t far, uint64_t ib1)
++{
++	volatile uint32_t *ring = (volatile uint32_t *)(cp_memory + RING_OFF);
++	const uint32_t n = RING_SIZE / 4, hdr = pkt7(CP_INDIRECT_BUFFER, 3);
++	unsigned shown = 0;
++
++	if (!a630_diag || !cp_memory || rptr >= n) {
++		return;
++	}
++	printf("SWEET GPU: %s: ring[%u..%u]: %08x %08x %08x %08x %08x %08x %08x %08x | %08x %08x %08x %08x %08x %08x %08x %08x\n", why,
++	    (rptr + n - 8) % n, (rptr + 7) % n, ring[(rptr + n - 8) % n], ring[(rptr + n - 7) % n], ring[(rptr + n - 6) % n],
++	    ring[(rptr + n - 5) % n], ring[(rptr + n - 4) % n], ring[(rptr + n - 3) % n], ring[(rptr + n - 2) % n],
++	    ring[(rptr + n - 1) % n], ring[rptr], ring[(rptr + 1) % n], ring[(rptr + 2) % n], ring[(rptr + 3) % n],
++	    ring[(rptr + 4) % n], ring[(rptr + 5) % n], ring[(rptr + 6) % n], ring[(rptr + 7) % n]);
++	for (uint32_t i = 0; i + 3 < n && shown < 4; i++) {
++		if (ring[i] != hdr) {
++			continue;
++		}
++		uint64_t base = (uint64_t)ring[i + 1] | ((uint64_t)ring[i + 2] << 32), bytes = (uint64_t)(ring[i + 3] & 0xfffffu) * 4;
++		bool is_ib1 = ib1 != 0 && base == ib1, hit = have_far && far >= base && far < base + bytes;
++		if (is_ib1 || hit) {
++			printf("SWEET GPU: %s: ring[%u] IB %#llx size %llu bytes%s%s%s\n", why, i, (unsigned long long)base,
++			    (unsigned long long)bytes, is_ib1 ? " = CP IB1" : "", hit ? " covers FAR" : "",
++			    (i < rptr) ? " (before RPTR)" : " (at/after RPTR)");
++			shown++;
++		}
++	}
++}
++
+ /* What the CP says when a submission does not come back (kernel log, safe on a collapsed GX). */
+ void
+ sweet_gpu_report(const char *why)
+@@ -2938,6 +2977,11 @@ sweet_gpu_report(const char *why)
+ 	if (w[0] & 1) {
+ 		printf("SWEET GPU: %s: CP RPTR %u WPTR %u SQE_CNTL %#x STATUS_1 %#x RBBM_STATUS %#x HW_FAULT %#x CP_IRQ %#x PROTECT %#x RBBM_IRQ %#x IB1 %#x%08x rem %u\n",
+ 		    why, w[26], w[27], w[33], w[28], w[29], w[30], w[31], w[34], w[32], w[36], w[35], w[37]);
++		if (a630_diag) {
++			/* 0263: the second-level IB (CP_IB2_BASE 0x92b/0x92c, REM_SIZE 0x92d); read while the core is readable only */
++			printf("SWEET GPU: %s: CP IB2 %#x%08x rem %u\n", why, gpu_r(0x092c), gpu_r(0x092b), gpu_r(0x092d));
++		}
++		gpu_report_ring(why, w[26], (w[19] & 0xc00001feu) != 0, ((uint64_t)w[21] << 32) | w[20], ((uint64_t)w[36] << 32) | w[35]);
+ 	}
+ 	sweet_log_sync();
+ }
+@@ -4050,6 +4094,9 @@ sweet_a630_probe(void)
+ 		if (PE_parse_boot_argn("sweetgpuwaitus", &v, sizeof(v)) && v >= 0) {
+ 			a630_wait_us = v == 0 ? 0 : (uint32_t)MIN(MAX(v, 50), 1000);
+ 		}
++		if (PE_parse_boot_argn("sweetgpudiag", &v, sizeof(v))) {
++			a630_diag = v != 0;
++		}
+ 		if (PE_parse_boot_argn("sweetgpuinput", &v, sizeof(v)) && v >= 0) {
+ 			a630_input_level = (uint32_t)MIN(v, 7);
+ 		}

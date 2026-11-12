@@ -1,0 +1,90 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 0192b54..8d0f47b 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -312,6 +312,7 @@ static uint32_t a630_stamps;           /* sweetgpustamps=1: CP timestamps around
+ static uint64_t gov_boost_until;        /* mach time until which the interactive boost floor holds */
+ static uint32_t a630_boost_level = 3;   /* sweetgpuboost=N: floor while a client submits frequently (0 = off) */
+ static uint32_t a630_hb_s;              /* sweetgpuhb=SECONDS: heartbeat line with GPU + USB clock state */
++static uint32_t a630_ramp_ms = 24;      /* sweetgpuramp=MS: governor fast up-ramp window (0 = off, 8..200); see gpu_gov_fast_ramp() */
+ static uint32_t a630_recover_max = 3;   /* sweetgpurecover=N: resets after a fault/hang before "lost until reboot" */
+ static uint32_t a630_bw_linux;          /* sweetgpubw=linux: the fixed Linux a630 BCM addresses instead of cmd-db's */
+ static int a630_gov;                    /* sweetgpufreq=gov */
+@@ -3533,6 +3534,8 @@ gpu_hfi_start_dcvs(bool gx_on)
+ 
+ static uint64_t gov_win_ns, gov_win_busy_ns, gov_busy_pct, res_ns[8];
+ static unsigned gov_low_windows, gov_prev_submits, gov_rate;
++static uint64_t gov_fast_ns, gov_fast_busy_ns;       /* the short up-ramp window (gpu_gov_fast_ramp) */
++static unsigned gov_fast_prev_submits;
+ 
+ /*
+  * Input boost (patch 0217). sweet_gpu_input_boost() is called by the touch thread (through sweet_input_boost(), at most
+@@ -3609,6 +3612,44 @@ gpu_busy_collect(void)
+ 	return busy;
+ }
+ 
++/*
++ * 0261: fast up-ramp. The 100 ms window below needs a whole window of data before it raises the floor (>= 4 submissions)
++ * and then climbs one or two levels per window, so a swipe starts at 257 MHz and reaches 710 MHz only after several
++ * hundred ms (measured: ~1-1.5 s, docs/GPU_KERNEL.md "Performance round"), and the GPU-bound part of the animation runs
++ * at the low clock. This looks at a much shorter window (sweetgpuramp=MS, default 24 ms = 6 PM ticks) and only ever
++ * raises the level: a client that submitted >= 2 times gets the boost floor at once (the same 400 ms hold as the
++ * 100 ms rule), and a GPU that was waiting on the CP for >= 70 % of the window goes up one level, >= 85 % two,
++ * >= 95 % straight to the cap. Going down stays with the 100 ms rule (hysteresis, nothing changes there). Each vote is the same
++ * gpu_set_level() the 100 ms rule makes, at most one per window, so the number of OOB handshakes stays small. PM thread,
++ * GPU lock held, governor on.
++ */
++static void
++gpu_gov_fast_ramp(void)
++{
++	uint64_t ns = gov_fast_ns ? gov_fast_ns : 1, busy = gov_fast_busy_ns, now = mach_absolute_time(), hold;
++	unsigned rate = a630_dev.submissions - gov_fast_prev_submits;
++	unsigned pct = (unsigned)MIN((uint64_t)100, busy * 100 / ns);
++	unsigned cap = a630_level_max, want = a630_level;
++
++	gov_fast_ns = gov_fast_busy_ns = 0;
++	gov_fast_prev_submits = a630_dev.submissions;
++	if (pct >= 95) {
++		want = cap;
++	} else if (pct >= 85) {
++		want = MIN(a630_level + 2, cap);
++	} else if (pct >= 70) {
++		want = MIN(a630_level + 1, cap);
++	}
++	if (a630_boost_level && rate >= 2) {
++		nanoseconds_to_absolutetime(400 * NSEC_PER_MSEC, &hold);
++		gov_boost_until = now + hold;
++		want = MAX(want, MIN(a630_boost_level, cap));
++	}
++	if (want > a630_level) {
++		(void)gpu_set_level(want);
++	}
++}
++
+ /*
+  * Utilisation by sampling: the PM thread wakes every 4 ms while the governor is on and counts the time during which the
+  * newest submission's fence is not yet written (the CP timestamps of sweetgpustamps=1 read as a frozen counter on this
+@@ -3621,8 +3662,13 @@ gpu_gov_tick(uint64_t dt)
+ {
+ 	if (!sweet_gpu_fence_done(a630_dev.seqno)) {
+ 		gov_win_busy_ns += dt;
++		gov_fast_busy_ns += dt;
+ 	}
+ 	gov_win_ns += dt;
++	gov_fast_ns += dt;
++	if (a630_gov && a630_ramp_ms && gov_fast_ns >= (uint64_t)a630_ramp_ms * NSEC_PER_MSEC) {
++		gpu_gov_fast_ramp();
++	}
+ 	if (gov_win_ns < 100 * NSEC_PER_MSEC) {
+ 		return;
+ 	}
+@@ -3989,6 +4035,9 @@ sweet_a630_probe(void)
+ 		if (PE_parse_boot_argn("sweetgpuboost", &v, sizeof(v)) && v >= 0) {
+ 			a630_boost_level = (uint32_t)MIN(v, 7);
+ 		}
++		if (PE_parse_boot_argn("sweetgpuramp", &v, sizeof(v)) && v >= 0) {
++			a630_ramp_ms = v == 0 ? 0 : (uint32_t)MIN(MAX(v, 8), 200);
++		}
+ 		if (PE_parse_boot_argn("sweetgpuinput", &v, sizeof(v)) && v >= 0) {
+ 			a630_input_level = (uint32_t)MIN(v, 7);
+ 		}

@@ -1,0 +1,70 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 8d0f47b..2c787ab 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -313,6 +313,7 @@ static uint64_t gov_boost_until;        /* mach time until which the interactive
+ static uint32_t a630_boost_level = 3;   /* sweetgpuboost=N: floor while a client submits frequently (0 = off) */
+ static uint32_t a630_hb_s;              /* sweetgpuhb=SECONDS: heartbeat line with GPU + USB clock state */
+ static uint32_t a630_ramp_ms = 24;      /* sweetgpuramp=MS: governor fast up-ramp window (0 = off, 8..200); see gpu_gov_fast_ramp() */
++static uint32_t a630_wait_us = 200;      /* sweetgpuwaitus=US: poll interval of a fence wait after its 2 ms spin (0 = the old 1 ms IOSleep) */
+ static uint32_t a630_recover_max = 3;   /* sweetgpurecover=N: resets after a fault/hang before "lost until reboot" */
+ static uint32_t a630_bw_linux;          /* sweetgpubw=linux: the fixed Linux a630 BCM addresses instead of cmd-db's */
+ static int a630_gov;                    /* sweetgpufreq=gov */
+@@ -2808,6 +2809,14 @@ sweet_gpu_param(uint32_t which, uint64_t *value)
+ 	}
+ }
+ 
++/* 0262: the wait path's poll interval in microseconds (SweetAdreno.cpp waitFence); 0 keeps IOSleep(1). */
++uint32_t sweet_gpu_wait_quantum_us(void);
++uint32_t
++sweet_gpu_wait_quantum_us(void)
++{
++	return a630_wait_us;
++}
++
+ uint32_t
+ sweet_gpu_fence_last(void)
+ {
+@@ -4038,6 +4047,9 @@ sweet_a630_probe(void)
+ 		if (PE_parse_boot_argn("sweetgpuramp", &v, sizeof(v)) && v >= 0) {
+ 			a630_ramp_ms = v == 0 ? 0 : (uint32_t)MIN(MAX(v, 8), 200);
+ 		}
++		if (PE_parse_boot_argn("sweetgpuwaitus", &v, sizeof(v)) && v >= 0) {
++			a630_wait_us = v == 0 ? 0 : (uint32_t)MIN(MAX(v, 50), 1000);
++		}
+ 		if (PE_parse_boot_argn("sweetgpuinput", &v, sizeof(v)) && v >= 0) {
+ 			a630_input_level = (uint32_t)MIN(v, 7);
+ 		}
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index 2fc64a8..e95716c 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -56,6 +56,7 @@ void sweet_gpu_cache_sync(void *va, size_t len);
+ uint32_t sweet_gpu_submit(const uint64_t *ib_iova, const uint32_t *ib_dwords, unsigned count);
+ bool sweet_gpu_fence_done(uint32_t fence);
+ uint32_t sweet_gpu_fence_last(void);
++uint32_t sweet_gpu_wait_quantum_us(void);
+ void sweet_gpu_mark_lost(void);
+ void sweet_gpu_report(const char *why);
+ void sweet_gpu_debug(uint32_t *w);
+@@ -336,7 +337,7 @@ bool
+ SweetAdrenoUserClient::waitFence(uint32_t fence, uint64_t ns)
+ {
+ 	uint64_t began = mach_absolute_time(), limit, cap, early;
+-	uint32_t epoch = sweet_gpu_epoch();
++	uint32_t epoch = sweet_gpu_epoch(), quantum = sweet_gpu_wait_quantum_us();
+ 
+ 	if (fence == 0 || sweet_gpu_fence_done(fence)) {
+ 		return true;
+@@ -372,6 +373,11 @@ SweetAdrenoUserClient::waitFence(uint32_t fence, uint64_t ns)
+ 		sweet_gpu_unlock();
+ 		if (waited < early) {           /* short jobs: spin; longer ones: sleep a millisecond at a time */
+ 			delay_for_interval(100, NSEC_PER_USEC);
++		} else if (quantum != 0) {
++			/* 0262: a frame's GPU work is a few ms, so a 1 ms sleep adds up to 1 ms (0.5 ms on average) between the fence
++			 * and the client noticing it; poll every sweetgpuwaitus (default 200 us) instead. Each poll is one lock
++			 * round trip, one fence read and one SMMU FSR read. */
++			delay_for_interval(quantum, NSEC_PER_USEC);
+ 		} else {
+ 			IOSleep(1);
+ 		}

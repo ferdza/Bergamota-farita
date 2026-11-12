@@ -274,3 +274,63 @@ Always-on changes of 0186 (also without the new boot-args): the CP stamps + `CP_
 * Sequences and register numbers: Linux `drivers/gpu/drm/msm/adreno/{a6xx_gpu.c,a6xx_gmu.c,a6xx_hfi.c}` and generated headers (GPL-2.0): facts only, nothing copied (see `GPU_A630_BRINGUP.md`). `msm_drm.h` structure layouts are the Linux uapi ABI (the UAPI header carries the Linux-syscall-note exception); they are re-declared here with `sweet_` names.
 * Interface shape: `hackios-xnu-kernel-ext` (`bsd/dev/redwood_adreno.c`, `iokit/Kernel/RedwoodGPU.cpp`, APSL-2.0, third-party data) read for the design (selectors = msm request numbers, polling, WC buffers, the kernel as the address allocator, gpu-lost handling); no code copied, all of it is rewritten for SDM845/xnu-11215.
 * Firmware is Qualcomm proprietary and never committed.
+
+## Performance round (2026-11-12)
+
+**Nothing in this section was compiled, run in CI or run on a phone.** The three patches below (`0261`-`0263`, `xnu/patches-11215/`) were written against the
+file as the series 0103..0260 builds it (reconstructed with `git apply` in a scratch repo, so the context is exact; the three apply cleanly in order and
+`tools/check-patches.py` passes). The new logic of 0261 and 0263 was also compiled and exercised once as a stand-alone C file with stubbed kernel
+symbols (syntax and arithmetic only). The web pages named in the task (UniXNU, hackios-xnu-kernel, ios-topaz) were NOT consulted: no network research was done,
+the ideas below come from reading our own code and the measurements in NOTES.md (FPS rounds 2-4).
+
+### Why the clock ramp is slow (read from the code, [V] = read, not measured)
+
+* The floor `sweetgpuboost` (default 3 = 414 MHz) is only set when a whole 100 ms window has seen >= 4 submissions [V]; the load rule then moves one level
+  (>= 80 % busy) or two (>= 90 %) per 100 ms window, and only a window with >= 95 % goes straight to the cap [V]. A swipe therefore needs several windows
+  to get from 257 MHz to 710 MHz. The input boost (0218, `sweetgpuinput`, default L4 = 520 MHz for 300 ms after the last touch event) helps while the finger is
+  down, but the fling after the lift has no touch events and falls back to the 100 ms rule [V].
+* Round 3's 32-38 fps at 257 MHz was the `sweetgpufreq=7` parse bug (fixed in 0186), not the governor; round 4's `sweetgpuboost=7` shows the GPU is not the
+  limit at 710 MHz (busy <= 60 %, CPU-saturated). So the goal of the governor work is only to be at a high clock earlier, not to go beyond it.
+
+### 0261: governor fast up-ramp (`sweetgpuramp=MS`, default 24, 0 = off, range 8..200)
+
+* What: the PM thread (4 ms tick, already running with `sweetgpufreq=gov`) also evaluates a 24 ms window. Never lowers anything. >= 2 submissions in it: the
+  boost floor (and its 400 ms hold) at once instead of after 100 ms. Waiting-on-fence share >= 70 % / 85 % / 95 %: +1 / +2 / straight to the cap. At most one
+  `gpu_set_level()` per window, same function and same locking as the 100 ms rule. Down-stepping is unchanged (two quiet 100 ms windows per step), so after a burst the
+  clock decays slowly (about 200 ms per level).
+* Expected effect: the first ~100-500 ms of every animation at the high clock instead of 257-414 MHz. Only matters where the GPU is the limit (start of
+  a swipe, heavier pages); a CPU-bound phase does not change. More time at high levels = more GPU power.
+* Risk: low. No new hardware access; more DCVS OOB votes than before (they go up only; a failed vote still turns the governor off, as today). Sampling is
+  quantised to the 4 ms tick, so a 24 ms window has 6 samples.
+* Test: boot with `sweetgpufreq=gov` (the default args) and compare `kern.sweet_gpu` (`level`, `boosted`, `dcvs_sets`, `input_*`) and the `frames:` line in
+  backboardd during a page swipe against `sweetgpuramp=0`; look for `GX level N` log lines within ~25 ms of the first frame. If `dcvs_errors` rises or the log
+  shows `GX level vote ... failed`, set `sweetgpuramp=0`. Only read/static-checked.
+
+### 0262: finer fence-wait polling (`sweetgpuwaitus=US`, default 200, 0 = old behaviour, range 50..1000)
+
+* What: `SweetAdrenoUserClient::waitFence` spun 100 us steps for the first 2 ms and then slept `IOSleep(1)` per poll. A frame's GPU time is a few ms, so the
+  wake-up after the fence lands up to 1 ms late (0.5 ms on average) per wait. Now it polls every `sweetgpuwaitus` microseconds with `delay_for_interval`
+  (the call the spin phase already uses). The only other change is a tunable exported from `sweet_a630.c` (`sweet_gpu_wait_quantum_us`).
+* Expected effect: about 0.3-0.5 ms less latency per wait; one wait per frame in the ~7 ms/frame "gpu wait" of round 2, so a few percent on a frame, nothing on the
+  CPU-bound part. Honest guess: small.
+* Risk: low. More lock round trips while waiting (one lock/unlock, one fence read, one SMMU FSR read per 200 us); if the kernel's `delay_for_interval` busy-waits at that
+  length (it blocks above a few cswtime, not verified) the waiting thread burns CPU instead of sleeping: then use `sweetgpuwaitus=0`.
+* Test: `sweetgpuwaitus=0` against the default, compare the `gpu wait` ms/s in the `frames:` perf line and thread CPU of the waiting backboardd thread. Only read/static-checked.
+
+### 0263: hang/fault report with ring and IB2 (`sweetgpudiag=0` disables)
+
+* What: extends `sweet_gpu_report()` (called before recovery on a hang, SMMU fault and wait timeout): CP_IB2_BASE/REM (regs 0x92b/0x92c/0x92d: taken from memory of the
+  a6xx register map, NOT checked against a header here), the 16 ring dwords around the CP's RPTR, and a scan of the ring for `CP_INDIRECT_BUFFER` packets that are
+  the IB the CP reports (IB1) or that cover the faulting SMMU address, printed as `ring[i] IB <iova> size <bytes> = CP IB1 / covers FAR`. Ring memory is kernel memory,
+  no further GPU register is read except the three IB2 words (and only while the core is readable, as for IB1). It does not parse IB contents (they live in client memory).
+* Expected effect: none on fps; a hang log names the submission and shows whether the fault is in the IB being run. This is the cheap part of UniXNU's hang diagnostics;
+  the full "scan IB1/IB2 for the faulting address" needs a kernel mapping of the IB (not available) and was not attempted.
+* Risk: very low (a few extra `printf`s on a path that is already slow). The IB2 register numbers are the only unverified item; a wrong number reads a harmless, wrong value.
+* Test: provoke a fault or read the log of the next real hang. Only read/static-checked (plus the stand-alone C check of the ring scan).
+
+### Evaluated, not done
+
+* (b) IRQ instead of polling: the submit already sets `CP_EVENT_WRITE_IRQ`, but no GPU interrupt is wired (nothing in the code services it), so an IRQ path needs GIC routing: too large for a patch nobody can compile here.
+* (c) Cheaper cache maintenance: `sweet_dma_sync_va` is already one `dc civac` per line with two barriers, and `BO_SYNC` honours the client's offset/size. A kernel-side
+  "dirty range" does not exist (the CPU writes through the user alias), so it needs userland to pass ranges. Not changed.
+* (e) A host-side test of the ring/submit logic: `sweet_gpu_submit` is entangled with SMMU/GMU register access; it would need a stub layer. Not done; only the two new helpers were checked stand-alone, as stated above.
