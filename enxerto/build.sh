@@ -74,7 +74,7 @@ if [ "$SDM845" = 1 ]; then
 	# Same layout as the ROM's boot.img: header v1, Image.gz with the DTB
 	# appended (ABL gunzips the kernel and finds the DTB behind the stream).
 	gzip -9 -n -c out/Image | cat - "$DTB" > out/Image.gz-dtb
-	mkbootimg --header_version 1 --kernel out/Image.gz-dtb --ramdisk out/ramdisk.bin \
+	mkbootimg --header_version "${HEADER_VERSION:-1}" --kernel out/Image.gz-dtb --ramdisk out/ramdisk.bin \
 		--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
 		--tags_offset 0x100 --pagesize 4096 --os_version 16.0.0 --os_patch_level 2025-06 \
 		--cmdline "$CMDLINE" -o out/enxerto-boot.img
