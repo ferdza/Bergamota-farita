@@ -1,0 +1,24 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 715e96c..af96881 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -869,7 +869,9 @@ gpu_power_cx(void)
+ #define MAIR0_CB                0x0004ff44u     /* 0 NC, 1 WBRWA, 2 device */
+ #define ACTLR_QCOM              ((1u << 28) | (1u << 29) | (1u << 30))
+ /* M TRE AFE CFRE CFIE ASIDPNE, bypass NSH; no CFCFG: a faulting access terminates instead of stalling */
+-#define SCTLR_CB                ((1u << 0) | (1u << 1) | (1u << 2) | (1u << 5) | (1u << 6) | (1u << 12) | (3u << 22))
++/* 0281: + HUPCF (bit 8, hit under previous context fault): Linux sets it for the adreno context (arm-smmu-qcom.c), so one fault does not
++ * wedge the CP's following accesses */
++#define SCTLR_CB                ((1u << 0) | (1u << 1) | (1u << 2) | (1u << 5) | (1u << 6) | (1u << 8) | (1u << 12) | (3u << 22))
+ #define S2CR_TRANS_CB(cb)       ((3u << 8) | (cb))
+ #define SMR_VALID               (1u << 31)
+ 
+@@ -2911,7 +2913,7 @@ sweet_gpu_debug(uint32_t *w)
+ 	w[16] = ring_wptr;
+ 	w[17] = cp_memory ? *(volatile uint32_t *)(cp_memory + SCRATCH_OFF + SCRATCH_FENCE) : 0;
+ 	w[18] = gpu_rd(gmu, GMU_CM3_FW_INIT_RESULT);
+-	if (smmu_base) {
++	if (smmu_base && !a630_asleep) {        /* 0281: not while slumbered (see 0279) */
+ 		vm_offset_t b = smmu_base + SMMU_CB(CP_CB);
+ 		w[19] = gpu_rd(b, SMMU_CB_FSR);
+ 		w[20] = gpu_rd(b, SMMU_CB_FAR);
