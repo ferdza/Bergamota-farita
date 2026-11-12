@@ -40,9 +40,46 @@ Abbreviations: ok = claimed working, part = partial, no = stated missing, ? = no
 | **ry-diffusion/Chlorophyll** (Bergamota's Metal driver; our upstream) | Poco F1, Adreno 630 | iOS 18.7.8, also iOS 26.6.2 notes (V IOS26.md) | README says MIT, but AIR frontend files come from hackios userland (MIT); S shows NOASSERTION | S: pushed 2026-10-26 | V: AIR->NIR->ir3 Metal on Gallium measured 14-35 fps swipes; Turnip runtime `chl` 27/27 checks on phone at 5-7.5 us/draw (docs/TURNIP.md); we already carry its perf patches |
 | **urielc918/ios-switch** | Nintendo Switch (Erista, Tegra X1), 4K-page xnu | 16.7.16 / xnu-8796 | MIT + APSL-2.0 patches; hekate GPLv2 only as register reference (V) | README status 2026-11-05; S pushed 2026-11-08 | V README: lock screen on panel, touch+buttons, 4 cores, SD DMA, battery, clock; CPU-drawn, no GPU; patches 0960-0988 |
 
-### 1b. Projects known from search metadata or web pages only (S/R)
+### 1b. SDM845 projects (R from repo pages fetched 2026-11-12 unless marked; licence from S)
 
-(DRAFT: filled in the next commit.)
+| Project | Device | iOS / xnu | Licence | Claimed state (R) |
+|---|---|---|---|---|
+| **edi194/ios-fajita** (S pushed 2026-11-11) | **OnePlus 6T fajita**, SDM845 (our device) | 16.7.16 / xnu-8796 (fork of ios-sweet, ~275 commits) | no licence shown (S: none) | README/NOTES-FAJITA (dated to 2026-10-24, commit log to 2026-11-06): lock/home screen, **RMI4 Synaptics touch** (I2C 0x20 on SE7, ldoa28 via RPMh), PM8998 keys, 8 cores, own UFS, panel console; **GPU a630 kernel ladder (adreno=9): GMU fw boots, HFI v1 both ways, GX on at 257 MHz; CP/zap/SMMU not yet (commits 2026-11-03..06: CP submit, SMMU translation fault, PTE removed under the CP, "IOKit owns buffer memory")**; **USB: 2026-11-05 commit "power the SDM845 controller up, with fajita's own clock offsets", no enumeration reported**; reboot-to-fastboot via qcom-pon/misc; no Wi-Fi (plan: port topaz 0113-0130), RTC reads 1969 |
+| ferdza/ios-fajita, miguelgargs/fajita-ios (S) | fajita | 16 | none | copies/forks of the above, no new evidence |
+| **johnpanos/UniXNU-fajita** (V in UniXNU docs/devices/fajita.md; S pushed 2026-10-27) | **fajita** | iPadOS 17.7.11 kernelcache, XNU 23.6.0 (xnu-10063) | NOASSERTION (S) | V: Mu-Silicium UEFI + UniXNU menu work on hardware via `fastboot boot`; XNU boots to root mount, "VM, scheduler, IOKit, AMFI, Sandbox, APFS start", **no storage driver**; 8.74 GiB iPadOS root flashed to userdata; payload volume flashed to `boot_a` because ABL refuses a large ramdisk; `fastboot set_active b` before each boot; firmware derived from the enchilada port (`scripts/make-fajita-uefi.py`) |
+| **keyfan/UniXNU-enchilada-bringup** (S pushed 2026-11-12) | OnePlus 6 enchilada, SDM845 | iPadOS 17.7.11; xnu not stated | LICENSE present, type not shown; S NOASSERTION | UEFI menu 2026-10-28; XNU reaches `_bsd_init`, launchd pid 1 (2026-11-03); root volume read with zero failures; Data = writable RAM disk, UFS read-only; SpringBoard/backboardd have run (software composition); touch not working; GPU not working; **USB: `NativeDwc3` default-off probe, unconfirmed; log over USB CDC ACM (`SHLOG001`)**; NOTES-touch/ssh/userland/ios16 |
+| dragon120820/UniXNU-enchilada, UniXNU-sdm845-common (V docs/devices/enchilada-dragon120820.md) | OnePlus 6 (A6003, 8 GB) | iOS 16.7.16 profile `ios-16.7.16-20H392` added by the author, xnu-8796.101.5 | NOASSERTION | V: "skeleton record", mostly planned; **useful hard facts**: ABL needs gzip Image + v1 header, bootstrap page table limit (8 pages cover 3 GiB, ARM_LARGE_MEMORY issue fixed by 0x80000000 owned memory), Mu-Silicium enchilada DTB vs 2.7 KB draft, SEC entry-arg HOB patch, `--target RELEASE` (DEBUG DXE ran out of pool), MMU-on stage probes reset the phone |
+| wangshaofan82-png/UniXNU-enchilada-port, rou2ter/UniXNU-enchilada-bringup (S, devices.toml) | OnePlus 6 | ? | NOASSERTION | no evidence read |
+| **WeiXiaoye/perseus-xnu** (S pushed 2026-11-09) | Xiaomi MIX 3 perseus, SDM845 | iOS 16.5 (20F66) / xnu-8796.121.2, HakiOS-based, edk2-sdm845 UEFI -> xnuloader | patches APSL-2.0, scripts MIT (R) | 8 cores, GICv3, APFS root + cryptex from UFS, UEFI framebuffer CPU rasterisation; **A630: Mesa freedreno + CoreAnimation reaches screen, CPU copies frames (tearing, ~35 ms pixel reorder)**; **touch driven by UEFI, kernel reads a shared page**; no USB/Wi-Fi/audio; charging unverified |
+| JaneAwA/iOS16_on_mix2s, JaneAwA/polaris-ios14, luuu20309/UniXNU-polaris, quyunze0215/ios-sweet-polaris, SPRMD / lxsc-zk / PuszekReksio polaris repos | Mi MIX 2S polaris, SDM845 | iOS 16 (MIT, S) and a xnu-7195 (iOS 14) experiment | MIT / NOASSERTION | luuu20309 (V devices.toml): platform stage verified on hardware, no root; JaneAwA (S): Mu-Silicium + custom arm64 boot shim; no further evidence |
+| hanyaa380/dipper-unixnu-bringup, e-xq/HackiOS-DiPPER-Audio | Mi 8 dipper, SDM845 | ? | MIT / NOASSERTION | V devices.toml (dipper): UEFI+menu+payload, XNU reaches BSD init, no root. **A repo named "HackiOS-DiPPER-Audio" (S 2026-11-10) suggests audio work on SDM845: not read** |
+| **LakoMoor/ios-beryllium** (S pushed 2026-10-31) | **Poco F1** | iOS 16 | MIT | "port of ios-apollo", no status read (open item) |
+| (ours) Bergamota / Bergamota-farita | Poco F1 / OnePlus 6T | 18.7.8 / xnu-11215.81.4 | per repo | see README |
+
+### 1c. Other SoCs (R/S; most useful for subsystems that SDM845 shares)
+
+| Project | Device / SoC | iOS / xnu | Licence | Claimed state (R) |
+|---|---|---|---|---|
+| **joranv1/ios-sailfish** | Pixel (2016) SD821, A530 | 16.7.16 / xnu-8796 | not stated | A530 UI via Mesa freedreno + own kernel GPU driver (GLES, UI 20-40 fps, no Metal), **Wi-Fi QCA6174 WPA2-PSK**, battery gauge + 1.5 A charging (PMI8994) |
+| **NWylynko/ios-flame** | Pixel 4 flame SD855, A640 | 16.7.16 / xnu-8796 | not stated (CREDITS.md) | **Metal on Mesa Turnip via metal2vulkan, UI on GPU, swipes 20-26 fps**, **Wi-Fi WCN3990 via userland `wland`**, USB SSH (dropbear), file server, live log; no audio/BT/cellular (docs: NOTES.md, HANDOFF.md, METAL-NEXT.md) |
+| **nonrootus/ios-sweet_k6a** | Redmi Note 12 Pro 4G, SM7150 A618 | 16.7.16 / xnu-8796.141.3, patches 0001-0225 | MIT + APSL patches | UI on GPU via freedreno, median frame 4-8 ms; **rootful jailbreak (Procursus, Sileo, OpenSSH, ElleKit)**; USB RNDIS + console, internet unstable; no Wi-Fi/BT/audio/modem |
+| **limonetexd/ios-sweet-gpu** | sweet SM7150 A618 | 16.7.16 | MIT | branch `gpu`: Metal driver, lock/home/Control Centre composited by GPU, self-test 15 of 19; `METAL_FINDINGS.md` |
+| **marnov999/ios26-sweet** | Mi 9T davinci SM7150 | **iOS 26 / xnu-12377, arm64e userland lowered to arm64 offline** | not stated | preparation only ("nothing built or booted"); measures ~29.3 M instructions to lower in the iPhone 11 cache; follows UniXNU-zeta PAC approach |
+| **Aruvelut-123/UniXNU-raphael** | K20 Pro SM8150 | iOS 18.7.12 (22H390), xnu 11417.140.69, **arm64 kernelcache of iPad7,11 (A10, no PAC)** | BSD-2-Clause-Patent | boot image in progress, firmware blocked on UEFI |
+| **Chengdong-Yu/UniXNU-pong** | Nothing Phone (2) SM8475 | iOS 18.6.2 arm64e, native 4K pages + PAC | not shown (NOASSERTION S) | native boot, writable UFS Data, **USB 480 Mbps normal, Wi-Fi QCA6490/ath11k working**, A730 stack integrated (README in Chinese) |
+| Kaydn913/hackios-pixel7pro, iola1999/hackios-redmi-k90-annibale, jabarin123/warsaw-xnu-kernel-RedmiK90Ultra (xnu 12377), skglab-dev/ios-taoyao, Camgobeg/iospro-r8q, ... | Pixel 7 Pro (Tensor G2, Mali-G710), K90 SM8750, ... | HakiOS-derived | mixed | existence only (S) |
+| squeeeezy/HelioDarwin | Infinix Note 12 MT6789 | 16 (topaz-based) | NOASSERTION | existence only (S); hackiosx lists POCO M8 5G (SD 6 Gen 3, SpringBoard + USB net, GPU in progress, mkukarin01 `kunzite`) and Galaxy S7 Exynos 8890 (wardevsa, setup screen + touch, CPU rendering) |
+| MCI49312/ios-z3s-opus | Galaxy S20 Ultra Exynos 990 | 16 | none | existence only (S) |
+| dex-community/ios-sweet-lg-g4 | LG G4 MSM8992 (LK) | 16 | MIT | existence only |
+| arabaci0711-ux/ios-vince (cited in LMasterPiec3 docs) | Redmi 5 Plus vince | 16 | ? | V (secondhand): source ends at patch 0091, no BT |
+| ch1tmdgus/ios-v60 | LG V60 SM8250 | ? | ? | hackiosx R: iOS UI, touch + buttons; BT UART bring-up diagnostics (from FORKS_SURVEY) |
+| **urielc918/ios-switch** | Switch Tegra X1 | 16 | MIT | see 1a |
+| **Snapintosh/Snapintosh** (+ SnapAdreno MIT, SnapQCC2072 MIT, SnapI2CHID MIT; S pushed 2026-10-25, 1255 stars) | ASUS A16 / Snapdragon X2 Elite (laptop), **macOS 27 stock kernel under an EL2 hypervisor** | macOS 27 | NOASSERTION, some GPL-2.0 files (per Chlorophyll TURNIP.md, V) | Adreno X2-90 IOGPU+display kext; different approach (hypervisor, stock kernel) |
+| CrossDarwin/macOS-ForSheng, alghiffaryfa19/macOS-ForSheng, mataht/sheng-macos-link-lab | sheng macOS 26.5/27 | macOS | GPL-3.0 / MIT | existence only (S) |
+| Droid-VM/macOS-DroidVM, UniXNU-droidvm | crosvm + Gunyah guest on Android phones | iPadOS 17.7.11 / macOS 27 | ? | V (UniXNU README, devices.toml): a virtualisation route, not bare metal |
+| MovByte/AirWgsl, MovByte/WebMetal | Metal via WGSL/WebGPU for UniXNU | | | existence only (S) |
+
+Not found: any press coverage (9to5mac, Android Authority, Pocket-lint) and any Telegram/X/YouTube evidence (see section 5).
 
 ## 2. Per-subsystem best known implementation (DRAFT)
 
