@@ -114,3 +114,62 @@ fn not_an_ipa() {
     let e = renegade::ipa::prepare(Rc::new(zip(&[("hello.txt", b"x".to_vec())]))).err().unwrap();
     assert!(e.to_string().contains("not an IPA"));
 }
+
+/// A universal binary (armv7 + arm64) used to stop the install with "not a 64-bit Mach-O": it is reduced to its arm64 slice.
+fn fat_with_armv7(arm64: &[u8]) -> Vec<u8> {
+    let armv7 = {
+        let mut v = vec![0u8; 96];
+        v[..4].copy_from_slice(&0xfeed_faceu32.to_le_bytes()); // 32-bit Mach-O
+        v
+    };
+    let (o1, o2) = (0x1000u32, 0x4000u32);
+    let mut out = vec![0u8; o2 as usize];
+    out[..4].copy_from_slice(&0xcafe_babeu32.to_be_bytes());
+    out[4..8].copy_from_slice(&2u32.to_be_bytes());
+    for (i, (cpu, sub, off, size)) in [(12u32, 9u32, o1, armv7.len() as u32), (0x0100_000c, 0, o2, arm64.len() as u32)].iter().enumerate() {
+        let e = 8 + 20 * i;
+        for (k, v) in [*cpu, *sub, *off, *size, 14].iter().enumerate() {
+            out[e + 4 * k..e + 4 * k + 4].copy_from_slice(&v.to_be_bytes());
+        }
+    }
+    out[o1 as usize..o1 as usize + armv7.len()].copy_from_slice(&armv7);
+    out.extend_from_slice(arm64);
+    out
+}
+
+#[test]
+fn thin_fat_keeps_the_arm64_slice() {
+    let exe = fixture("exe");
+    let fat = fat_with_armv7(&exe);
+    assert_eq!(renegade::ipa::thin_fat(&fat).unwrap().as_deref(), Some(&exe[..]));
+    // not a fat Mach-O: a Java class file starts with the same magic
+    let mut java = vec![0u8; 200];
+    java[..4].copy_from_slice(&0xcafe_babeu32.to_be_bytes());
+    java[7] = 61; // "major version" read as the arch count: slices fall outside the file
+    assert!(renegade::ipa::thin_fat(&java).unwrap().is_none());
+    // no arm64 slice at all
+    let mut x86 = fat.clone();
+    x86[8 + 20 + 3] = 7; // second slice: cpu 7 (x86)
+    x86[8 + 20 + 2] = 0;
+    assert!(renegade::ipa::thin_fat(&x86).is_err());
+    assert!(renegade::ipa::thin_fat(&exe).unwrap().is_none());
+}
+
+#[test]
+fn a_universal_ipa_installs_and_a_java_class_is_left_alone() {
+    let exe = fixture("exe");
+    let mut class = vec![0u8; 200];
+    class[..4].copy_from_slice(&0xcafe_babeu32.to_be_bytes());
+    class[7] = 61;
+    let ipa = zip(&[
+        ("Payload/Test.app/Info.plist", INFO.as_bytes().to_vec()),
+        ("Payload/Test.app/exe", fat_with_armv7(&exe)),
+        ("Payload/Test.app/assets/Hello.class", class.clone()),
+    ]);
+    let p = renegade::ipa::prepare(Rc::new(ipa)).expect("a universal binary must be reduced to arm64, not refused");
+    assert_eq!(p.machos, 1, "only the real Mach-O is signed; the class file is not one");
+    let list = tar_list(&p.tar);
+    let size = |n: &str| list.iter().find(|(m, _, _)| m == n).map(|(_, s, _)| *s);
+    assert!(size("Test.app/exe").is_some());
+    assert_eq!(size("Test.app/assets/Hello.class"), Some(class.len()), "the Java class is copied byte for byte");
+}

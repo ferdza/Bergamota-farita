@@ -43,6 +43,48 @@ fn fairplay(d: &[u8]) -> bool {
     false
 }
 
+/// A universal (fat) binary reduced to its 64-bit ARM slice. `Ok(None)`: not a fat Mach-O (a Java class file starts with the same
+/// 0xCAFEBABE). Plain arm64 is preferred over arm64e (this phone has no pointer authentication, the strip below handles arm64e
+/// anyway); armv7 / x86_64 / simulator slices are dropped. An IPA built for several architectures used to stop the whole
+/// install with "not a 64-bit Mach-O", because every slice was signed.
+pub fn thin_fat(d: &[u8]) -> Result<Option<Vec<u8>>> {
+    const CPU_ARM64: u32 = 0x0100_000c;
+    let be32 = |o: usize| u32::from_be_bytes(d[o..o + 4].try_into().unwrap());
+    let be64 = |o: usize| u64::from_be_bytes(d[o..o + 8].try_into().unwrap());
+    if d.len() < 8 {
+        return Ok(None);
+    }
+    let fat64 = match be32(0) {
+        0xcafe_babe => false,
+        0xcafe_babf => true,
+        _ => return Ok(None),
+    };
+    let n = be32(4) as usize;
+    let esz = if fat64 { 32 } else { 20 };
+    if n == 0 || n > 8 || 8 + n * esz > d.len() {
+        return Ok(None);
+    }
+    // (cputype, cpusubtype, offset, size) of each slice; a real fat header keeps every slice inside the file
+    let mut slices = Vec::new();
+    for i in 0..n {
+        let e = 8 + i * esz;
+        let (off, size) = if fat64 { (be64(e + 8), be64(e + 16)) } else { (be32(e + 8) as u64, be32(e + 12) as u64) };
+        if size < 32 || off.checked_add(size).is_none_or(|end| end > d.len() as u64) {
+            return Ok(None);
+        }
+        slices.push((be32(e), be32(e + 4) & 0x00ff_ffff, off as usize, size as usize));
+    }
+    // plain arm64 (subtype 0 / 1) first, then arm64e (2)
+    let pick = slices.iter().filter(|s| s.0 == CPU_ARM64).min_by_key(|s| u32::from(s.1 == 2));
+    match pick {
+        Some(&(_, _, off, size)) => Ok(Some(d[off..off + size].to_vec())),
+        None => {
+            let have: Vec<String> = slices.iter().map(|s| format!("cpu {:#x}", s.0)).collect();
+            Err(bad(format!("a universal binary without an arm64 slice ({}): this phone runs arm64 only", have.join(", "))))
+        }
+    }
+}
+
 fn plist_str(info: Option<&[u8]>, key: &str) -> Option<String> {
     let v = crate::plist::parse(info?).ok()?;
     v.get(key).and_then(|x| x.as_str()).map(str::to_string)
@@ -84,7 +126,20 @@ pub fn prepare(ipa: Src) -> Result<Prepared> {
     let bundle_id = plist_str(info.as_deref(), "CFBundleIdentifier").unwrap_or_default();
     let version = plist_str(info.as_deref(), "CFBundleShortVersionString").unwrap_or_default();
 
-    let machos: Vec<String> = files.iter().filter(|(_, d)| is_macho(d)).map(|(p, _)| p.clone()).collect();
+    // universal binaries are reduced to their arm64 slice first; a 0xCAFEBABE file that is no Mach-O (a Java class) is copied as is
+    let mut not_macho: std::collections::BTreeSet<String> = Default::default();
+    let fat: Vec<String> = files.iter().filter(|(_, d)| d.len() >= 8 && matches!(&d[..4], [0xca, 0xfe, 0xba, 0xbe] | [0xca, 0xfe, 0xba, 0xbf])).map(|(p, _)| p.clone()).collect();
+    for p in fat {
+        match thin_fat(&files[&p]).map_err(|e| bad(format!("{p}: {e}")))? {
+            Some(slice) => {
+                files.insert(p, slice);
+            }
+            None => {
+                not_macho.insert(p);
+            }
+        }
+    }
+    let machos: Vec<String> = files.iter().filter(|(p, d)| is_macho(d) && !not_macho.contains(*p)).map(|(p, _)| p.clone()).collect();
     for p in &machos {
         if fairplay(&files[p]) {
             return Err(bad(format!(
