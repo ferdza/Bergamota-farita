@@ -41,7 +41,25 @@ Run here (no aarch64 gcc in this sandbox, so `BOARD=fajita enxerto/build.sh` cou
 | F-22 | P3 | UNMAP chunk size not taken from the device | OBSERVED |
 | F-23 | P3 | `build.sh`: no `-Werror`, inflater test not run, host tests need the cross compiler | OBSERVED |
 
-Findings F-24 onward (ABL, install path, ADT, other projects) follow in later sections.
+| F-24 | P1 | No clean power-off / return-to-Android path in Enxerto (only hard resets) | OBSERVED |
+| F-25 | P1 | Unlocked bootloader is load-bearing; never relock; lock state not checked | UNVERIFIED |
+| F-26 | P2 | A/B slot state invisible to the install path | INFERRED |
+| F-27 | P2 | Header-v1 `fastboot boot` image has no DTBO of its own | UNVERIFIED |
+| F-28 | P2 | Hard-coded fastboot serial/identity collides across phones | OBSERVED |
+| F-29 | P1 | Unjournaled HFS+ plus hard resets is the data-loss mechanism | OBSERVED |
+| F-30 | P2 | Install erases userdata with no enforced backup of persist/modem/EFS | OBSERVED |
+| F-31 | P1 | `mkadt.py` exits 0 without `/product` | OBSERVED (ran it) |
+| F-32 | P1 | Kernel RAM window hard-coded (from the Poco F1), not derived from the 6T | INFERRED |
+| F-33 | P2 | ADT `random-seed` fixed per image | OBSERVED |
+| F-34 | P2 | iPhone X (A11) identity under an iPhone XR (A12) iOS 18 root | INFERRED |
+| F-35 | P2 | fajita framebuffer carve-out size copied from beryllium | UNVERIFIED |
+| F-36 | P3 | Synthetic ECID/MAC/IP identical on every phone | OBSERVED |
+| F-37 | P2 | `mkpayload.py` silently truncates boot-args at 607 | OBSERVED |
+| F-38 | P3 | `mkpayload.py` uses asserts, no overlap/fit checks | OBSERVED |
+| F-39 | P2 | No automated missing-property audit against a real D22AP ADT | UNVERIFIED |
+| F-40 | P3 | `--lowpool` refuses fajita | OBSERVED |
+
+Sections: 1 Enxerto (F-01..F-23), 2 boot chain (F-24..F-30), 3 ADT (F-31..F-40), 4 what to adopt, 5 recovery runbook.
 
 ## 1. Enxerto findings
 
