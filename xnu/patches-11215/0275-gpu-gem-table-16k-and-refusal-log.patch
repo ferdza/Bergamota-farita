@@ -1,0 +1,39 @@
+diff --git a/iokit/Kernel/arm/SweetAdreno.cpp b/iokit/Kernel/arm/SweetAdreno.cpp
+index e95716c..73b6a25 100644
+--- a/iokit/Kernel/arm/SweetAdreno.cpp
++++ b/iokit/Kernel/arm/SweetAdreno.cpp
+@@ -63,7 +63,9 @@ void sweet_gpu_debug(uint32_t *w);
+ void SweetAdrenoPublish(void);
+ }
+ 
+-#define GEM_MAX                 4096
++/* 0275: was 4096. backboardd (Chlorophyll) opens a BO per texture/buffer refresh; 4096 handles ran out a few minutes in and
++ * every later GEM_NEW failed, even for 3 KiB, which Turnip reports as VK_ERROR_OUT_OF_DEVICE_MEMORY (missing icons, backboardd abort). */
++#define GEM_MAX                 16384
+ #define GEM_SIZE_MAX            (256ull << 20)
+ #define QUEUE_IDS               64
+ #define SUBMIT_BOS_MAX          4096
+@@ -546,6 +548,11 @@ SweetAdrenoUserClient::gemNew(struct sweet_msm_gem_new *r)
+ 	IOBufferMemoryDescriptor *buf = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMapWriteCombineCache, (vm_size_t)size, PAGE_SIZE);
+ 	if (buf == NULL) {
++		static uint32_t gem_nomem_logs;
++		if (gem_nomem_logs < 24) {
++			gem_nomem_logs++;
++			IOLog("SWEET GPU: GEM_NEW %llu bytes: no wired memory\n", size);
++		}
+ 		return kIOReturnNoMemory;
+ 	}
+ 	uint8_t *kva = (uint8_t *)buf->getBytesNoCopy();
+@@ -582,6 +589,11 @@ SweetAdrenoUserClient::gemNew(struct sweet_msm_gem_new *r)
+ 	}
+ 	sweet_gpu_unlock();
+ 	if (ret != kIOReturnSuccess) {
++		static uint32_t gem_fail_logs;
++		if (gem_fail_logs < 24) {
++			gem_fail_logs++;
++			IOLog("SWEET GPU: GEM_NEW %llu bytes refused: 0x%x (handle table %u)\n", size, ret, (unsigned)GEM_MAX);
++		}
+ 		buf->release();
+ 	}
+ 	return ret;
