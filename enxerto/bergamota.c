@@ -25,6 +25,7 @@
 #include "fdt.h"
 #include "loader.h"
 #include "mmu.h"
+#include "pmic.h"
 #include "storage.h"
 #include "ufs.h"
 #include "usb_dwc3.h"
@@ -131,6 +132,66 @@ int bergamota_wanted(uintptr_t dtb)
 	}
 	set_entry("no payload");
 	return !loader_has_payload(dtb);
+}
+
+/*
+ * Boot menu (user request, 2026-11-12): a payload is present and nothing asked for fastboot. Power pressed within MENU_MS boots iOS; otherwise
+ * Bergamota fastboot, so a hard reset or a CrashDump exit always lands somewhere safe instead of in a half-booted iOS that gets
+ * hard-reset again. A Power key still held from switching the phone on does not count: it must go up first. boot.img cmdline
+ * "bergamota.menu=0" keeps the old direct boot, and when the key cannot be read the payload boots (a phone is never trapped in fastboot).
+ * Returns 1 = boot the payload, 0 = fastboot. MMU off, polled.
+ */
+#define MENU_MS 5000
+
+int bergamota_boot_menu(uintptr_t dtb)
+{
+	const char *v = cmdline_opt(dtb, "bergamota.menu=");
+	uint64_t t0;
+	unsigned shown = 0xffffffffu, errs = 0;
+	int seen_up = 0;
+
+	if (v && *v == '0')
+		return 1;
+	if (pmic_init() < 0) {
+		con_str("MENU", "keys unavailable: booting iOS");
+		return 1;
+	}
+	con_str("MENU", "POWER = iOS, wait = FASTBOOT");
+	t0 = ms_now();
+	for (;;) {
+		uint64_t el = ms_now() - t0;
+		unsigned left, k;
+
+		if (el >= MENU_MS) {
+			con_str("MENU", "no key: fastboot");
+			return 0;
+		}
+		left = (unsigned)((MENU_MS - el + 999) / 1000);
+		if (left != shown) {
+			char s[16] = "FASTBOOT IN  ";
+			s[12] = (char)('0' + left);
+			con_str("MENU", s);
+			shown = left;
+		}
+		k = pmic_keys();
+		if (k & PMIC_KEY_ERR) {
+			if (++errs >= 25 && !seen_up) {
+				con_str("MENU", "keys unavailable: booting iOS");
+				return 1;
+			}
+		} else {
+			errs = 0;
+			if (k & PMIC_KEY_POWER) {
+				if (seen_up) {
+					con_str("MENU", "Power: booting iOS");
+					return 1;
+				}
+			} else {
+				seen_up = 1;
+			}
+		}
+		delay_ms(20);
+	}
 }
 
 /* ---- reset ---- */

@@ -8,5 +8,7 @@
  * without the flag it runs when the ABL ramdisk holds no SWEETXNU payload.
  */
 int bergamota_wanted(uintptr_t dtb);
+/* A payload is present and fastboot was not asked for: Power within 5 s boots it (1), otherwise fastboot (0). bergamota.menu=0 disables it. */
+int bergamota_boot_menu(uintptr_t dtb);
 /* Serve fastboot. Returns only if it could not start (USB init failed, no buffer): the reason. */
 const char *bergamota_fastboot(uintptr_t dtb);

@@ -402,7 +402,13 @@ void enxerto_main(uint64_t dtb)
 	 * Bergamota fastboot (bergamota.c): boot.img cmdline "bergamota.fastboot=1", or no payload in
 	 * the ramdisk. Returns only when it could not start; then fall through to the old paths.
 	 */
-	if (bergamota_wanted(dtb)) {
+	int fb_wanted = bergamota_wanted(dtb);
+	if (!fb_wanted) {
+		/* a payload is present and nothing asked for fastboot: 5 s menu, Power = iOS, otherwise fastboot */
+		stage = "menu";
+		fb_wanted = bergamota_boot_menu(dtb) == 0;
+	}
+	if (fb_wanted) {
 		stage = "fastboot";
 		const char *fwhy = bergamota_fastboot(dtb);
 		con_skip();

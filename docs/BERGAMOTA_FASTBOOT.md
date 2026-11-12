@@ -163,3 +163,12 @@ master RCG 66.67 MHz (GPLL0/9; DT core-clk-rate-hs), mock-UTMI/aux RCGs 19.2 MHz
 the QUSB2 init sequence from live.dts ending with PWR_CTRL1 = 0x22, then reads GSNPSID. Not handled: PHY supplies (vdda18/vdda33/vdd via PMIC/RPMh), the efuse tune correction,
 PIPE/QMP SuperSpeed (port is USB 2.0). The GCC offsets of cfg-noc (0x0502c) and aggre are copied from sweet_usb.c (checked on beryllium by the xnu probe only in the "already on" case);
 voted-clock enable registers are not used. Treat as best effort.
+
+
+## Boot menu (2026-11-12)
+
+When the ramdisk holds an iOS payload and nothing asked for fastboot (`bergamota.fastboot=1`, the `sweetreboot bergamota` restart reason), Enxerto shows a 5 s menu on the
+text console: **Power = boot iOS, no key = Bergamota fastboot** (the default). It makes every hard reset, CrashDump exit or `reboot` land somewhere safe where `fastboot`
+can flash or boot, instead of a half-booted iOS that gets hard-reset again (the HFS+ root is unjournaled). A Power key still held from switching the phone on does not count:
+it must go up first. `bergamota.menu=0` on the boot.img cmdline restores the direct boot; if the PMIC key register cannot be read the payload boots, so a phone is never trapped.
+Code: `bergamota_boot_menu()` in `enxerto/bergamota.c`, called from `enxerto_main()`. Compiled and host-tested (fastboot_test 511/0); **not run on a phone**.
