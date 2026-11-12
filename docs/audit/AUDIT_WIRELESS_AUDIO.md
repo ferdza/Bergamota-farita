@@ -214,7 +214,7 @@ BT A2DP (section 2) is the fastest *audible* route (needs no DSP): worth testing
 
 * Everything in section 1 first (same MSS code, same 6T address deltas). The 6T needs **writable/persistent EFS** for registration: our rmtfs keeps writes in RAM (`1113`), so modem NV (calibration, IMEI-adjacent `modemst1/2`, `fsg`, `fsc`) is volatile and *must stay read-only for safety* (IMEI on `modemst`/persist: AGENTS.md says keep modem/persist untouched). HackiOS made the same choice and still got registration on UMTS/LTE; so the read-only policy is not itself a blocker.
 * Cellular needs the SIM/IMEI stack of iOS (CommCenter, `AppleBaseband*` kexts) which are absent: HackiOS bypasses by painting its own signal item in SpringBoard (`inject_sb.c`, MIT) and exposing `en1`. No iOS 18 equivalent exists.
-* Plan (after Wi-Fi): (1) QMI client library over the existing QRTR (message tables from Linux `drivers/net/ipa/`, `qmi_interface.c`, ModemManager docs: spec only) 1 wk; (2) DMS/NAS/UIM (SIM state, signal) 1 wk; (3) IPA 4.x on SDM845 (Linux `drivers/net/ipa`, IPA v3.5.1 for SDM845: **different from HackiOS's v4.11**; firmware `ipa_fws.mbn` from the phone) 2-3 wk; (4) WDS data session + `en1`: 1-2 wk; (5) SpringBoard status item. Calls/SMS: not in scope. **Total ~6-8 wk, high risk of IMEI-adjacent damage if anything writes**: keep all modem partitions read-only.
+* Plan (after Wi-Fi): (1) QMI client library over the existing QRTR (message tables from Linux `drivers/net/ipa/`, `qmi_interface.c`, ModemManager docs: spec only) 1 wk; (2) DMS/NAS/UIM (SIM state, signal) 1 wk; (3) IPA 4.x on SDM845 (Linux `drivers/net/ipa`, IPA v3.5.1 for SDM845, UNVERIFIED from memory: **different from HackiOS's v4.11**; firmware `ipa_fws.mbn` from the phone) 2-3 wk; (4) WDS data session + `en1`: 1-2 wk; (5) SpringBoard status item. Calls/SMS: not in scope. **Total ~6-8 wk, high risk of IMEI-adjacent damage if anything writes**: keep all modem partitions read-only.
 * Learn from: HackiOS `drivers/modem/{hakios.qmi.c,hakios.nas.c,hakios.cell.c,hakios.ipa.c}` (APSL 2.0 for `drivers/`, adaptable with notices; redwood-specific numbers via `soc_*` boot-args).
 
 ## 5. Sensors (accelerometer, gyro, proximity, ALS, magnetometer)
@@ -244,3 +244,38 @@ Linux `sdm845-oneplus-common.dtsi` puts a **TI bq27441** fuel gauge on i2c10 @0x
 INFERRED: on the 6T the PMI8998 FG MSOC may be unused or inaccurate; the bq27441 (I2C10 = QUP SE?) is the authoritative source and
 the design capacity is 3700 mAh with 4.4 V max (Linux fajita.dts). Fix: add an I2C bq27441 reader (standard TI registers, public
 datasheet) selected by `sweet_board_fajita()` in the battery patches (0092/0130/0200s).
+
+## 8. Defect list in current code (point findings)
+
+| # | Where | Finding | Tag |
+|---|---|---|---|
+| D1 | `xnu/patches-12377/1106` `MSS_MBA_PA`, `1111` `MSS_MPSS_PA`, `1117` `WLFW_MSA_PA`, `1113` `RMTFS_MEM_PA` | Poco F1 carve-outs hard-coded; the 6T uses the generic layout (0x96500000, 0x8e000000, 0x8df00000, rmtfs 0xf5b00000). The MBA address falls inside the 6T's `slpi_mem`. First MSS run on fajita would likely hit an XPU violation / CrashDump. Must be ADT-driven | INFERRED (Linux dts) |
+| D2 | `xnu/patches-11215/0104` `fat_mount("modem")`, `wl_inventory`, `ufs_part_locate` | exact GPT-name match; 6T is A/B so `modem_a`/`bluetooth_a` expected; no slot fallback | INFERRED |
+| D3 | `1117` WLFW client (host cap) | follows `snoc-host-cap-skip-quirk` (Poco F1); the 6T needs the 8-bit HOST_CAP request (`qcom,snoc-host-cap-8bit-quirk`) | INFERRED (Linux dts + ath10k qmi.c) |
+| D4 | `tools/renegade/mkboot-full.sh` line 21 / `gpu-default-args.txt` | no `sweetwlan=2 sweetbt=1 ...`: every default image (incl. fajita) leaves BT off, bluetoothd crash-loops; `docs/FAJITA.md` "BT not ported" is stale | OBSERVED |
+| D5 | `tools/mkadt.py:41` `BT_MAC` | same fixed synthetic BD address for every phone | OBSERVED |
+| D6 | `sweetwlan=` shared by BT (2) and Wi-Fi (3/4/5) | one integer gates mutually exclusive stages; BT + Wi-Fi together need a bitmask or separate `sweetbt=` that also arms the rails; WCN3990 rails shared (`0117` panic history) | INFERRED |
+| D7 | `0239` bt-hci-compat | by design rewrites errors to success, fake vendor replies, 800 ms fake completion: hides real controller failures; keep `SWEET BT: compat:` log, add a counter sysctl | OBSERVED (design) |
+| D8 | `docs/WIFI_BT_IOS18.md` 3.2 | "4-8 weeks Apple80211-lite" is outdated by the iOS 26 stand-in (1100-1130) | OBSERVED |
+| D9 | `1113` rmtfs RAM-write EFS | fine for Wi-Fi, insufficient for cellular on the 6T if the modem insists on persistent NV | UNVERIFIED |
+| D10 | battery: `0092/0095` | PMI8998 FG on SID2 vs the 6T's bq27441 on i2c10 and 3700 mAh/4.4 V design | INFERRED |
+| D11 | `0104`/`1118` polling | 1 ms polled WMI/CE service (WIFI_IOS26_PHASE2): CPU/battery drain, not a bug | OBSERVED |
+
+## 9. Licences (what we may adapt)
+
+| Source | Licence (checked) | Use |
+|---|---|---|
+| Linux (`ath10k`, `btqca`, `hci_qca`, `qcom_q6v5_mss`, `qmi_interface`, `net/qrtr`, `wcd934x`, `slim-qcom-ngd-ctrl`, dts) | GPL v2 | **idea/spec only**, no copy. Note: HackiOS's `wifi/lx/` compiles Linux ath11k into an APSL kernel: not a model for us |
+| HackiOS kernel (`hackios-xnu-kernel`) | `LICENSE`: `xnu/hakios.patch`, `xnu/files/`, `drivers/` = APSL 2.0 (derivative of XNU); everything else (loader, userland/src, tools, docs, devices) = MIT. Third parties in `THIRD_PARTY_LICENSES.md` (not read) | `drivers/*` adaptable under APSL with notices (same as ours); `userland/src/audio_plugin.c` etc. MIT with notice. Their addresses are redwood's |
+| ios-topaz (MakrSas) | **no LICENSE file** in the clone; `CREDITS.md`: HackiOS-derived patches 0900-0947 APSL 2.0, HackiOS userland MIT | the unlicensed parts (0113-0130 modem/WLAN, 0144-0146 audio) = all rights reserved by default: read, do not copy; ask the author or re-derive from Linux/our own work |
+| LMasterPiec3/ios-sweet (dipa-studio upstream) | no LICENSE file in the clone (README, NOTES only) | same: do not copy |
+| UniXNU | `LICENSE`: BSD-2-Clause-Patent | adaptable with notice |
+| wangshaofan82-png/UniXNU-enchilada-port | repo code MIT (README), XNU patches APSL | adaptable, but has nothing for these subsystems |
+| edi194, JaneAwA forks | not stated / not checked | nothing useful anyway |
+
+## 10. Repos to clone for deeper reading (not cloned by me)
+
+* `oosexgang/hackios-xnu-kernel` is already local. Useful extra: `oosexgang/hakios-sm7325` (redwood defconfig/status) and `oosexgang/hackios-xnu-userland` (pointer only now).
+* `MakrSas/topaz-woa` (Windows-on-Arm topaz, where the speaker chain works, referenced by ios-topaz 0144): for the ADSP/GPR sequence; SM6225 though, not SDM845.
+* For the SDM845 audio/modem spec: Linux tree files (fetch from raw.githubusercontent.com): `sound/soc/qcom/sdm845.c`, `sound/soc/qcom/qdsp6/*`, `drivers/slimbus/qcom-ngd-ctrl.c`, `sound/soc/codecs/wcd934x.c`, `drivers/net/ipa/`, `drivers/remoteproc/qcom_q6v5_pas.c`, `drivers/soc/qcom/{apr.c,pdr_interface.c}`, plus postmarketOS `firmware-oneplus-sdm845` for 6T firmware names (needs a phone-side file check, not a clone).
+* **Not done in this audit (time / tool limits):** reading `WIFI_BT_PLAN.md` and `BT_IOS_TRANSPORT.md` in full; checking iOS 18's IO80211/wifid strings (needs the dyld cache); postmarketOS wiki for the 6T feature table (blocked by Anubis; the web search hit the rate limit); no 6T GPT/Android DTBO was available to confirm D2 and the vibration/sensor wiring.
