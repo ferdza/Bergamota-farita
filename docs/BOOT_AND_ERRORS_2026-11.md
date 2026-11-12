@@ -19,7 +19,7 @@ Observations come from the user's logs; "guess" marks anything not verified.
 | Qualcomm CrashDump on reboot | after launchd teardown | IMEM at boot: [0x1c]=0xffffffff [0x20]=0xffffffff [0xc8]=0x2016b822 [0x65c]=0xdf4e7ebf (0274 evidence); 0xffffffff in both dload words looks like "unmapped/not initialised", unverified | open; `sweetdload_imem=1` writes zeroes, result pending |
 | MobileSafari aborts at launch (sig 6, ns 2 code 6) twice | crash lines, no reason string | unknown | open, needs the .ips header from the diag export |
 | bluetoothd crash loop (ns 18 code 2, reason 1201) | many CRASH lines | no Bluetooth hardware support | known |
-| HFS `BlockMarkFreeInternal ... unallocated blocks` at boot | kernel log | unjournaled root after a hard reset | `--journal` available, default off |
+| HFS `BlockMarkFreeInternal ... unallocated blocks` at boot | kernel log | unjournaled root after a hard reset | journal now on by default in renegade-rs (8 MiB, 2026-11-12); not booted yet |
 | cluster0 load 100% at 1.77 GHz constant | SWEET CPUFREQ lines | something busy on the little cluster; not identified | perf work to do |
 
 ## Not ported
