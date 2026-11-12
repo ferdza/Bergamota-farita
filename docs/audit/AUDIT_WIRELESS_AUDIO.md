@@ -177,7 +177,7 @@ We are the **only project in the survey with working iOS Bluetooth**. Nobody to 
 
 1. No ADSP boot. Needs the PAS SCM calls (`qcom_scm_pas_init_image/mem_setup/auth_and_reset`, service 0x0C); xnu 0106-0111 only do MBA/MSS. HackiOS/topaz both wrote PAS code (HackiOS's is APSL 2.0 and ADSP-specific numbers are redwood: image 1, item 443/429, IPCC), SDM845 differs (**no IPCC**: SDM845 uses APCS/IPC bits via mailbox, as our 1112 SMP2P doorbell already does; SMP2P ADSP items 443/429 are the same family as Linux `smp2p` on SDM845 = remote pid 2).
 2. APR (not GPR) service set: ASM, ADM, AFE on `apr_audio_svc` over GLINK: HackiOS shows the working order for redwood; Linux `sound/soc/qcom/qdsp6/{q6afe,q6asm,q6adm,q6routing}.c` is the spec.
-3. The audio DSP reads sample buffers through the apps SMMU (HackiOS: stream 0x1801 with `qcom,smmu-sid-mask 0xf`; **SDM845 value UNVERIFIED**, from Linux `sdm845.dtsi` `q6asmdai`/`q6adm` iommus: check the local clone). The SDM845 hypervisor resets the SoC on an unmatched stream (`FORKS_SURVEY` A1): same lesson as USB/GPU, so reuse our SMMU context code (0094/0254).
+3. The audio DSP reads sample buffers through the apps SMMU (HackiOS: stream 0x1801 with `qcom,smmu-sid-mask 0xf`; SDM845: `q6asm-dais` has `iommus = <&apps_smmu 0x1821 0x0>` in the local `sdm845.dtsi` line 967, OBSERVED; mask/high bits convention UNVERIFIED). The SDM845 hypervisor resets the SoC on an unmatched stream (`FORKS_SURVEY` A1): same lesson as USB/GPU, so reuse our SMMU context code (0094/0254).
 4. The TFA9894 amp: I2C and firmware container unknown; **no protection without the DSP's speaker protection**: HackiOS wrote a software `guard` (gain, high-pass, power average, peak limiter) because the vendor speaker protection is in the DSP. Same risk on the 6T: a mis-driven amp can damage the speaker. Start at -20 dB below nominal like HackiOS `sound_below=160`.
 5. iOS side: needs a HAL path. Our root has no VirtualAudio device for the 6T; HackiOS's plug-in approach (MIT, iOS 16.5, `userland/src/audio_plugin.c`) may be reusable but **iOS 18.7.8's VirtualAudio/coreaudiod layout is UNVERIFIED**.
 6. Everything above shares `adsp_mem`/SMEM/IPC code with Wi-Fi (HackiOS had to put locks around the shared always-on mailbox and the SMEM allocator when Wi-Fi and ADSP ran together, `hakios.adsp.c` head). Ours: `beryllium_wlan.c` owns SMEM allocation; any audio code must go through its lock.
@@ -197,3 +197,50 @@ We are the **only project in the survey with working iOS Bluetooth**. Nobody to 
 
 Shortest realistic path to "iOS plays a sound from the 6T speaker": steps 1-5, **~5-8 weeks** after Wi-Fi's shared plumbing exists.
 BT A2DP (section 2) is the fastest *audible* route (needs no DSP): worth testing first.
+
+## 4. Modem / cellular (MPSS, QMI, IPA)
+
+### 4.1 Status table
+
+| Project | State |
+|---|---|
+| **Ours (Poco F1, iOS 26 tree)** | The *infrastructure* exists because Wi-Fi needs it: MBA self-auth boot, MPSS load, SMP2P, GLINK/QRTR, rmtfs (read-only, RAM writes), TFTP, pd-mapper; modem "fully booted" (boot 40). No QMI client for NAS/WDS/DMS/UIM, no IPA, no RIL-equivalent (iOS has CommCenter / `AppleBaseband` expectations: a baseband "Apple" interface we do not have). Stops after WLFW. OBSERVED `WIFI_IOS26.md` 5.13-5.20 |
+| Ours, iOS 18 / 6T | nothing beyond the 0104 probe; modem not started |
+| HackiOS (redwood) | **partial, further than anyone**: MPSS up, ~88 QMI services seen, rmtfs ro, TFTP, pd-mapper; IPA firmware via TZ + GSI channels + filter/route tables; DPM/WDA/WDS data session code, NAS signal bars shown in SpringBoard (`kern.hakios.cellular_bars`), SIM found and bound; IPv4 data session **not yet established** (packet-domain attach), no calls/SMS, no IPv6. `docs/cellular.md` OBSERVED. Interface `en1` with fake ARP/DHCP so configd configures it |
+| UniXNU | `drivers/QcomBaseband` directory exists (not read: README only says it exists) UNVERIFIED |
+| ios-topaz | uses the modem only for Wi-Fi (TopazModem), no cellular |
+
+### 4.2 Blockers and shortest path
+
+* Everything in section 1 first (same MSS code, same 6T address deltas). The 6T needs **writable/persistent EFS** for registration: our rmtfs keeps writes in RAM (`1113`), so modem NV (calibration, IMEI-adjacent `modemst1/2`, `fsg`, `fsc`) is volatile and *must stay read-only for safety* (IMEI on `modemst`/persist: AGENTS.md says keep modem/persist untouched). HackiOS made the same choice and still got registration on UMTS/LTE; so the read-only policy is not itself a blocker.
+* Cellular needs the SIM/IMEI stack of iOS (CommCenter, `AppleBaseband*` kexts) which are absent: HackiOS bypasses by painting its own signal item in SpringBoard (`inject_sb.c`, MIT) and exposing `en1`. No iOS 18 equivalent exists.
+* Plan (after Wi-Fi): (1) QMI client library over the existing QRTR (message tables from Linux `drivers/net/ipa/`, `qmi_interface.c`, ModemManager docs: spec only) 1 wk; (2) DMS/NAS/UIM (SIM state, signal) 1 wk; (3) IPA 4.x on SDM845 (Linux `drivers/net/ipa`, IPA v3.5.1 for SDM845: **different from HackiOS's v4.11**; firmware `ipa_fws.mbn` from the phone) 2-3 wk; (4) WDS data session + `en1`: 1-2 wk; (5) SpringBoard status item. Calls/SMS: not in scope. **Total ~6-8 wk, high risk of IMEI-adjacent damage if anything writes**: keep all modem partitions read-only.
+* Learn from: HackiOS `drivers/modem/{hakios.qmi.c,hakios.nas.c,hakios.cell.c,hakios.ipa.c}` (APSL 2.0 for `drivers/`, adaptable with notices; redwood-specific numbers via `soc_*` boot-args).
+
+## 5. Sensors (accelerometer, gyro, proximity, ALS, magnetometer)
+
+* **Ours: nothing.** OBSERVED (no patch, `docs/FAJITA.md` omits sensors). Linux `sdm845-oneplus-common.dtsi` defines only the Hall sensor (gpio 124) and no I2C sensors: on SDM845 phones the IMU/ALS/proximity are managed by the **SLPI** DSP ("sensors" / SSC), reached over QRTR/FastRPC (Linux has `slpi_pas` + FastRPC only; no mainline sensor driver). INFERRED/UNVERIFIED for the 6T specifically (OnePlus may wire some on I2C to SLPI only).
+* Others: **nobody** (HackiOS: battery through ADSP battmgr, thermal via TSENS; no IMU; topaz: "No ... sensors"; edi194/JaneAwA: "not started"). So no reference.
+* iOS impact: backboardd/SpringBoard run without them; consequences are no auto-rotation, no auto-brightness, no proximity blanking. Cheap stand-ins: fixed ALS value and portrait-only (no code needed); proximity unneeded without calls.
+* Shortest path (if wanted): SLPI PAS boot (needs the same PAS client as audio; `slpi_mem` 0x96700000+0x1400000 on the 6T) then QRTR service enumeration, then the Qualcomm Sensors "sns" QMI/protobuf (sensor_ui / SSC): large, protobuf-based, UNVERIFIED. Effort 6+ weeks, no reference. Recommendation: stub unless user asks; look first at whether the 6T routes the accelerometer on I2C to the AP (read the Android DTBO, see section 6).
+
+## 6. Vibration, camera, NFC, GPS, fingerprint/FaceID
+
+| Item | Facts | Path |
+|---|---|---|
+| **Vibration** | Linux `sdm845-oneplus-common.dtsi`: no motor node (OBSERVED). The 6T motor type/controller is UNVERIFIED (not found in the files I read; may be a PMIC LRA/haptics block or an external driver). HackiOS drives an Awinic AW86927 LRA on I2C for redwood with waveforms from the phone's `aw8697_haptic.bin`, and exposes an "Actuator" CoreAudio device which iOS uses for haptics (`hakios.haptic.c`, `audio_plugin.c`) | 1) read the stock Android DTBO of the 6T (the board nodes live in the DTBO, `FAJITA.md`) to find the motor controller; 2) simple on/off tap driver first (SPMI or I2C), 3) iOS "Actuator" plug-in (needs audio HAL path, section 3 step 5). Effort 1-2 wk after the part is known |
+| **Camera** | Linux: sensors IMX519 (@0x1a) and IMX376K (@0x10) only in comments, CCI enabled (OBSERVED, WebFetch). HackiOS `hakios.camera.c` (165 KB) + torch: Camera.app works on redwood. UNVERIFIED on anything SDM845 | Out of scope: needs CCI I2C, CSIPHY/CSID/ISP (Titan 170) via the SoC camss + sensor register tables + iOS AVFoundation expectations; torch/flash LED (PMI8998 flash) is the cheap first step (HackiOS `hakios.torch.c`). Effort 8+ wk |
+| **NFC** | NXP **PN553** on i2c3 @0x28, enable gpio 12, firmware gpio 62 (Linux dts, OBSERVED) | iOS has no NCI path for a PN553 (iOS uses Apple's own `AppleNFC`/`nfcd` for SE/Apple Pay): nothing meaningful to gain; skip |
+| **GPS** | Modem QMI LOC service (GNSS inside MPSS) | after section 4; no iOS consumer without CoreLocation providers (`locationd` can use Wi-Fi/GPS hardware drivers we lack). Low priority |
+| **Fingerprint / Face ID** | not needed; the 6T uses an optical in-display FP (Goodix) or Synaptics/FPC over SPI (UNVERIFIED); iOS 18 Touch ID would need SEP: impossible | none |
+| **Hall sensor** | gpio 124 (Linux) | trivial GPIO key (smart-cover) |
+| **Alert slider** | 3-position GPIO switch | add to keys driver (`0082b`) |
+
+## 7. Adjacent finding: 6T battery gauge (not in scope, but a defect)
+
+Linux `sdm845-oneplus-common.dtsi` puts a **TI bq27441** fuel gauge on i2c10 @0x55 (`ti,bq27411`) for the 6/6T; our fuel-gauge code
+(`0092-beryllium-battery-fg`, `0095-spmi-battery-sid2`, Enxerto `pmic.c`) reads the **PMI8998 FG** at SPMI SID2 (Poco F1 design).
+`docs/FAJITA.md` says "state-of-charge not yet confirmed" and "iOS reports the beryllium battery design capacity (not 3700 mAh)".
+INFERRED: on the 6T the PMI8998 FG MSOC may be unused or inaccurate; the bq27441 (I2C10 = QUP SE?) is the authoritative source and
+the design capacity is 3700 mAh with 4.4 V max (Linux fajita.dts). Fix: add an I2C bq27441 reader (standard TI registers, public
+datasheet) selected by `sweet_board_fajita()` in the battery patches (0092/0130/0200s).
