@@ -40,7 +40,7 @@ pub struct Config {
     pub ssh_key: Option<String>,
     /// volume size in bytes (None: used + 6 GiB, at least 24 GiB)
     pub volume_size: Option<u64>,
-    /// Reserve a journal of this many bytes in the root (hfswrite::Options::journal); None: unjournaled (default).
+    /// Reserve a journal of this many bytes in the root (hfswrite::Options::journal); None: unjournaled. Default: DEFAULT_JOURNAL (8 MiB).
     pub journal: Option<u32>,
     /// Debugging: keep only the entries at or under this path (and its folders); implies nothing else.
     pub only: Option<String>,
@@ -50,9 +50,12 @@ pub struct Config {
     pub tap: Option<Box<dyn FnMut(&str, u64, &[u8])>>,
 }
 
+/// Journal reserved in a root by default (like newfs_hfs -J on a volume of this size): a hard reset replays it instead of leaving the catalog torn.
+pub const DEFAULT_JOURNAL: u32 = 8 << 20;
+
 impl Default for Config {
     fn default() -> Self {
-        Config { pems: Vec::new(), now: 0, verify_aea: false, macho: true, cache: Some(dsc::Options::default()), tweaks: true, quiet: false, idle: true, tools: None, ssh_key: None, volume_size: None, journal: None, only: None, entries_tap: None, tap: None }
+        Config { pems: Vec::new(), now: 0, verify_aea: false, macho: true, cache: Some(dsc::Options::default()), tweaks: true, quiet: false, idle: true, tools: None, ssh_key: None, volume_size: None, journal: Some(DEFAULT_JOURNAL), only: None, entries_tap: None, tap: None }
     }
 }
 

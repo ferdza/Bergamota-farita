@@ -76,6 +76,15 @@ fn parse_journal(opts: &BTreeMap<String, String>) -> Res<Option<u32>> {
     }
 }
 
+/// The root command: a journal of DEFAULT_JOURNAL unless `--journal SIZE` or `--journal 0` (unjournaled, the old behaviour).
+fn parse_root_journal(opts: &BTreeMap<String, String>) -> Res<Option<u32>> {
+    match opts.get("--journal").map(|s| s.as_str()) {
+        Some("0") | Some("off") | Some("none") => Ok(None),
+        Some(_) => parse_journal(opts),
+        None => Ok(Some(renegade::rootbuild::DEFAULT_JOURNAL)),
+    }
+}
+
 fn cmd_mkhfs(args: &[String]) -> Res<ExitCode> {
     let (pos, opts, flags) = split(args, &["--size", "--name", "--map", "--date"]);
     let [src, out] = &pos[..] else { return Err("mkhfs SRC_DIR OUT.img [--size 20g] [--name iOSRoot] [--map owners.tsv] [--default-root] [--date UNIX]".into()) };
@@ -202,7 +211,7 @@ fn img2simg_consume(raw: &Path, out: &Path) -> Res<renegade::sparse::Img2SimgSta
 fn cmd_root(args: &[String]) -> Res<ExitCode> {
     let (pos, opts, flags) = split(args, &["--map", "--size", "--name", "--date", "--journal", "--raw", "--build", "--version", "--board", "--adt-target", "--netcfg", "--sweetreboot"]);
     let [src, out] = &pos[..] else {
-        return Err("root SRC_DIR OUT.simg --build B --version V [--board N104 --adt-target N104] [--map owners.tsv] [--size 20g] [--journal 8m] [--raw RAW.img] [--keep-raw] [--no-tweaks] [--no-macho] [--quiet] [--netcfg FILE] [--sweetreboot FILE]".into());
+        return Err("root SRC_DIR OUT.simg --build B --version V [--board N104 --adt-target N104] [--map owners.tsv] [--size 20g] [--journal 8m|0] [--raw RAW.img] [--keep-raw] [--no-tweaks] [--no-macho] [--quiet] [--netcfg FILE] [--sweetreboot FILE]".into());
     };
     let date: u32 = opts.get("--date").map(|d| d.parse()).transpose()?.unwrap_or(0);
     let (mut entries, paths, skipped) = renegade::tree::scan_dir(Path::new(src))?;
@@ -269,7 +278,7 @@ fn cmd_root(args: &[String]) -> Res<ExitCode> {
         size: opts.get("--size").map(|s| parse_size(s)).transpose()?,
         date,
         data_order: None,
-        journal: parse_journal(&opts)?,
+        journal: parse_root_journal(&opts)?,
     };
     let raw = opts.get("--raw").map(Path::new).map(Path::to_path_buf).unwrap_or_else(|| Path::new(out).with_extension("img"));
     File::create(&raw)?;

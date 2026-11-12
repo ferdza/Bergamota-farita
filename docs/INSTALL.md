@@ -20,7 +20,7 @@ page builds already contains the GPU userland (Chlorophyll) wired into backboard
    (docs/FAJITA.md step 1) and the Adreno 630 firmware with `tools/gpu-fw-pull.sh` into `research/gpu-fw/`. After step 1 the Android
    partitions that hold them are gone from `userdata`; `vendor`/`modem` stay, but do not rely on it.
 4. Never hard-reset iOS once it runs (long Power, Power + Vol down): the OnePlus ABL arms Qualcomm CrashDump on any reset (leave it with
-   Power + Vol up ~15 s), and the root is an unjournaled HFS+.
+   Power + Vol up ~15 s), and the root is HFS+ with a journal (8 MiB, default since 2026-11-12; the journal is created at the first mount, replayed after a hard reset).
 
 ## 1. Root (web installer)
 
@@ -81,7 +81,7 @@ if you ever wrote one. Android's data is gone after step 1: restore from your ow
   that the kernel's GPU is up (`sweetgpu=8`) and that it can make the Metal device. Otherwise backboardd runs stock (CPU).
 - Recovery without SSH: boot with `sweetdenypath=/usr/local/lib/bgmtl/bgmtl-inject.dylib`. With SSH: the page's *GPU off* /
   *Restore backboardd*.
-- Never hard-reset iOS (long Power, Power + Vol down): the root is an unjournaled HFS+ (`docs/FAJITA.md`, known issues).
+- Avoid hard-resetting iOS (long Power, Power + Vol down): the root has a journal now (`renegade-rs root --journal 0` turns it off), but nothing is verified on the phone yet.
 
 ## Developer notes
 
