@@ -48,6 +48,11 @@ fn compare_with(quiet: bool, with_tools: bool) {
         eprintln!("python3 not found: skipping");
         return;
     }
+    // Rust drops owner records equal to the process owner (right without sudo); Python records them as root on Linux
+    if unsafe { libc_getuid() } == 0 {
+        eprintln!("running as uid 0: owner records differ by design, skipping");
+        return;
+    }
     let base = std::env::temp_dir().join(format!("renegade-rs-tweaks-{}-{quiet}-{with_tools}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     let (py_root, rs_root, tools) = (base.join("py"), base.join("rs"), base.join("tools"));
@@ -89,7 +94,9 @@ fn compare_with(quiet: bool, with_tools: bool) {
     let strip_src = |t: String| -> String {
         t.lines().map(|l| match l.find("payload from ") { Some(i) if l.contains(" installed in ") => format!("{}payload{}", &l[..i], &l[l.find(" installed in ").unwrap()..]), _ => l.to_string() }).collect::<Vec<_>>().join("\n")
     };
-    let (pl, rl) = (strip_src(String::from_utf8_lossy(&p.stdout).into_owned()), String::from_utf8_lossy(&r.stdout).into_owned());
+    // the `chlorophyll:` line is Rust only (the Python builder wires Mercury, not backboardd): not part of the comparison
+    let drop_chl = |s: String| s.lines().filter(|l| !l.starts_with("chlorophyll:")).collect::<Vec<_>>().join("\n");
+    let (pl, rl) = (strip_src(String::from_utf8_lossy(&p.stdout).into_owned()), drop_chl(String::from_utf8_lossy(&r.stdout).into_owned()));
     assert_eq!(rl.lines().collect::<Vec<_>>(), pl.lines().collect::<Vec<_>>(), "printed lines / owners differ");
     let (a, b) = (tree(&py_root), tree(&rs_root));
     for (x, y) in a.iter().zip(b.iter()) {
@@ -121,7 +128,7 @@ fn tweaks_with_quiet_match_root_tweaks18() {
 /// left in its folder, and the recorded owners must be the same.
 #[test]
 fn tweaks_on_the_tree_match_root_tweaks18() {
-    if Command::new("python3").arg("--version").output().is_err() {
+    if Command::new("python3").arg("--version").output().is_err() || unsafe { libc_getuid() } == 0 {
         return;
     }
     let base = std::env::temp_dir().join(format!("renegade-rs-treefs-{}", std::process::id()));

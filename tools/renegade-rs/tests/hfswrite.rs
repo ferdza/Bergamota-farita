@@ -90,7 +90,7 @@ fn source_tree(d: &Path) -> PathBuf {
         run(Command::new(bin()).args(["hfs"]).arg(root().join("tests/fixtures/hfsx.simg")).args(["getdir", &format!("/{sub}")]).arg(src.join(sub)));
     }
     fs::hard_link(src.join("usr/lib/hello.txt"), src.join("usr/lib/link2.txt")).unwrap();
-    fs::hard_link(src.join("usr/lib/hello.txt"), src.join("Library/Café/link3.txt")).unwrap();
+    fs::hard_link(src.join("usr/lib/hello.txt"), src.join("Library/Cafe\u{301}/link3.txt")).unwrap();
     fs::create_dir_all(src.join("empty/deeper/still")).unwrap();
     fs::write(src.join("empty/deeper/Case"), b"upper").unwrap();
     fs::write(src.join("empty/deeper/case"), b"lower").unwrap(); // HFSX is case-sensitive

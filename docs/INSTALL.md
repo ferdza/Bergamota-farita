@@ -9,6 +9,19 @@ page builds already contains the GPU userland (Chlorophyll) wired into backboard
 | **Boot image** | `tools/install/build-boot.sh <board>` (Linux or macOS) | `sweetgpu=8` + governor + the direct scan-out framebuffer, from `tools/renegade/gpu-default-args.txt` |
 | **Phone** | the Bergamota fastboot page: *Boot once* (nothing is written to `boot`) | nothing to switch on |
 
+## 0. Before anything is erased (do this first: step 1 erases Android's data)
+
+1. **Prerequisites:** an unlocked bootloader (`fastboot getvar unlocked`), Chrome or Edge on a desktop, about 17 GB free in the browser's
+   storage, and the exact phone: `fastboot getvar product` answers `sdm845` on the OnePlus 6T. The page only checks that SoC name, so
+   another SDM845 phone would pass the gate: make sure it really is a 6T before you flash.
+2. **Back up what cannot be rebuilt** (read-only from OrangeFox + adb, nothing written): the stock `boot` image, `persist`, `modemst1/2`,
+   `fsg` (IMEI and calibration, never published), and your Android data if you want it. Keep the dumps off git (AGENTS.md).
+3. **Pull what the boot image needs while Android is still there:** the SoC DTB of your stock `boot.img` into `dtb/fajita/dtb`
+   (docs/FAJITA.md step 1) and the Adreno 630 firmware with `tools/gpu-fw-pull.sh` into `research/gpu-fw/`. After step 1 the Android
+   partitions that hold them are gone from `userdata`; `vendor`/`modem` stay, but do not rely on it.
+4. Never hard-reset iOS once it runs (long Power, Power + Vol down): the OnePlus ABL arms Qualcomm CrashDump on any reset (leave it with
+   Power + Vol up ~15 s), and the root is an unjournaled HFS+.
+
 ## 1. Root (web installer)
 
 <https://ferdza.github.io/Bergamota-farita/flash/> (Chrome/Edge on a desktop). Drop `iPhone11,8_18.7.8_22H352_Restore.ipsw`, paste
@@ -23,13 +36,19 @@ re-run *web (GitHub Pages)*, and patch again. The root still works, on the CPU r
 D22AP_IPSW_URL=<iPhone10,3 IPSW URL> tools/install/build-boot.sh fajita      # or: beryllium
 ```
 
-It needs, once: `dtb/<board>/dtb` (your phone's stock DTB), the GPU firmware in `research/gpu-fw/` (`tools/gpu-fw-pull.sh`, read-only from
-your own Android partitions) and a green *xnu* CI run (downloaded with `gh`, or `KERNEL=file`). The OEM zap firmware is inside the ADT:
+It needs, once, and you got them in step 0: `dtb/<board>/dtb` (your phone's stock DTB) and the GPU firmware in `research/gpu-fw/`
+(`tools/gpu-fw-pull.sh`, read-only from your own Android partitions) and a green *xnu* CI run (downloaded with `gh`, or `KERNEL=file`). The OEM zap firmware is inside the ADT:
 never publish the image. `GPU=0` builds a CPU-renderer image without firmware.
 
 ## 3. Boot
 
 Bergamota fastboot page: *Flash an image -> Enxerto (boot) -> your image -> Boot once*. The first iOS boot takes minutes.
+
+## If it does not boot
+
+Nothing was written to `boot` (*Boot once* only starts the image), so restarting the phone returns to the ABL; flash your backed-up stock `boot`
+if you ever wrote one. Android's data is gone after step 1: restore from your own backup or flash your stock ROM (the boot-chain audit,
+`docs/audit/AUDIT_BOOT_CHAIN.md`, will carry the recovery runbook when it lands).
 
 ## Safety net (all of it is already in the install)
 
