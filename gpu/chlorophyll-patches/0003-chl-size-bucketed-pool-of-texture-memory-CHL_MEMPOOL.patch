@@ -1,0 +1,476 @@
+From b5f069d698bd2bb927a2135254eb5242cd96de01 Mon Sep 17 00:00:00 2001
+From: Claude <a@b.c>
+Date: Thu, 12 Nov 2026 14:09:16 +0000
+Subject: [PATCH 3/6] chl: size-bucketed pool of texture memory
+ (CHL_MEMPOOL_MB)
+
+CoreAnimation sizes its offscreen targets to the moving layer extent, so the exact-shape texture pool in
+bgmtl.m hits only 30-45 % (NOTES). What a texture costs the kernel is its BO (vkAllocateMemory), not the
+VkImage or its views. chl_texture_create now takes memory from a pool of destroyed textures' blocks kept by
+size: blocks are allocated rounded to eighths of a power of two (at least 64 KB), a new image binds the
+smallest block that is big enough and at most 25 % + 64 KB too big, at offset 0 (an image may be bound to
+memory that held another one; its layout starts UNDEFINED). The block goes back to the pool when the
+texture is destroyed (command buffers hold the texture until they complete, so the GPU is done with it).
+
+- air/chl_mempool.h: the pool as plain C over opaque handles; test/chl_mempool_test.c exercises it on a
+  host (bucket rounding, owner separation, smallest fit, cap eviction, expiry, slot bound). Run with gcc.
+- Off unless CHL_MEMPOOL_MB is set (cap in MB; the inject should set it for backboardd next to
+  BGMTL_TEXPOOL_MB). CHL_MEMPOOL_AGE_MS (default 5000) is how long an unused block stays.
+- chl_trim() frees the pool (for the idle trim); chl_device_close drains the device's blocks.
+- chl_stats gains pool_hits / pool_misses / pool_held_bytes.
+- Imported IOSurface textures, views and buffers are never pooled.
+
+Risk (guess, not tested): Turnip UBWC flag data inside a reused block is stale at bind time. The spec allows
+aliasing in UNDEFINED layout and Turnip handles the UNDEFINED transition, but this must be seen on the
+phone (swipe test, look for corrupted blur targets). Unset CHL_MEMPOOL_MB to turn it off.
+
+chl_vk.c was not compiled (needs Mesa headers + iOS).
+
+Claude-Session: https://claude.ai/code/session_01LbQpVTcCZP2zgEqnwYHZKn
+---
+ air/chl.h               |   5 +
+ air/chl_mempool.h       | 209 ++++++++++++++++++++++++++++++++++++++++
+ air/chl_vk.c            |  55 ++++++++++-
+ test/chl_mempool_test.c |  88 +++++++++++++++++
+ 4 files changed, 353 insertions(+), 4 deletions(-)
+ create mode 100644 air/chl_mempool.h
+ create mode 100644 test/chl_mempool_test.c
+
+diff --git a/air/chl.h b/air/chl.h
+index ae27617..1408018 100644
+--- a/air/chl.h
++++ b/air/chl.h
+@@ -59,8 +59,13 @@ struct chl_stats {
+    uint64_t mem_allocs, mem_alloc_bytes;   /* vkAllocateMemory calls and their bytes: buffers, textures, surface imports */
+    uint64_t mem_frees;                     /* vkFreeMemory calls */
+    uint64_t images;                        /* VkImages made for textures (chl_texture_create) */
++   uint64_t pool_hits, pool_misses;        /* texture memory taken from the bucketed pool / not found there (pool on only) */
++   uint64_t pool_held_bytes;               /* what the pool holds now */
+ };
+ void chl_get_stats(struct chl_stats *out);
++/* Give the pooled texture memory back to the kernel (the idle trim). CHL_MEMPOOL_MB=<n> turns the pool on (cap in MB, off
++ * when unset); CHL_MEMPOOL_AGE_MS (default 5000) is how long an unused block stays. */
++void chl_trim(void);
+ const char *chl_device_name(const struct chl_device *dev);
+ 
+ /* ---- buffers: host-visible, coherent, mapped for their whole life ---- */
+diff --git a/air/chl_mempool.h b/air/chl_mempool.h
+new file mode 100644
+index 0000000..75d412f
+--- /dev/null
++++ b/air/chl_mempool.h
+@@ -0,0 +1,209 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Chlorophyll: a pool of device memory blocks (the VkDeviceMemory of destroyed textures), kept by size bucket.
++ *
++ * CoreAnimation sizes its offscreen targets to the layer extent, which moves every frame, so a pool keyed by the exact
++ * texture shape hits only 30-45 % of the time (NOTES: "texpool"). The expensive part of making a texture is the kernel's
++ * BO (vkAllocateMemory); the VkImage and its views are plain userland objects. So the pool keeps the MEMORY: a new image
++ * of a different shape binds a block that is big enough (and not much bigger) at offset 0. Vulkan allows binding an image
++ * to memory that held another image (its initial layout is UNDEFINED, which is what transition_new_image records).
++ *
++ * Blocks are allocated rounded up to a bucket (1/8 of the size's power of two, at least 64 KB), so shapes that differ by a
++ * few rows or columns share blocks. A take accepts a block up to 25 % + 64 KB over the need.
++ *
++ * Plain C over opaque 64-bit handles, so it is unit-tested on a host (test/chl_mempool_test.c). Re-implemented from the
++ * idea of size-bucketed BO caches (freedreno's fd_bo_cache buckets BOs by power-of-two eighths); no code copied.
++ * Off unless CHL_MEMPOOL_MB is set (the inject sets it for backboardd, like BGMTL_TEXPOOL_MB); CHL_MEMPOOL_AGE_MS (5000).
++ */
++#ifndef CHL_MEMPOOL_H
++#define CHL_MEMPOOL_H
++
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <time.h>
++
++#define CHL_MEMPOOL_SLOTS 96
++#define CHL_MEMPOOL_MIN_STEP (64u << 10)
++
++struct chl_mempool_ent {
++   uint64_t mem;     /* 0: free slot */
++   uint64_t size;
++   int64_t t;        /* when it was put */
++   const void *owner;
++};
++
++struct chl_mempool {
++   pthread_mutex_t lock;
++   bool configured;
++   uint64_t cap;     /* bytes; 0 = off */
++   int64_t age_ns;
++   uint64_t bytes;   /* held */
++   uint64_t hits, misses, puts;
++   struct chl_mempool_ent e[CHL_MEMPOOL_SLOTS];
++};
++
++#define CHL_MEMPOOL_INIT { PTHREAD_MUTEX_INITIALIZER, false, 0, 0, 0, 0, 0, 0, { { 0, 0, 0, NULL } } }
++
++/* frees one block; owner is the one it was put with */
++typedef void (*chl_mempool_free_fn)(const void *owner, uint64_t mem);
++struct chl_mempool_victim {
++   const void *owner;
++   uint64_t mem;
++};
++
++static inline int64_t
++chl_mempool_now(void)
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (int64_t)ts.tv_sec * 1000000000ll + ts.tv_nsec;
++}
++
++/* the size a block is allocated at for a need of `size` bytes */
++static inline uint64_t
++chl_mempool_bucket(uint64_t size)
++{
++   uint64_t p = 1;
++   while (p < size && p < (1ull << 62))
++      p <<= 1;
++   /* size in (p/2, p]: eight steps per power of two */
++   uint64_t step = p >> 4;
++   if (step < CHL_MEMPOOL_MIN_STEP)
++      step = CHL_MEMPOOL_MIN_STEP;
++   return (size + step - 1) / step * step;
++}
++
++/* cap in bytes (0 = off), age in ns; callable again to change them */
++static inline void
++chl_mempool_configure(struct chl_mempool *p, uint64_t cap, int64_t age_ns)
++{
++   pthread_mutex_lock(&p->lock);
++   p->cap = cap;
++   p->age_ns = age_ns;
++   p->configured = true;
++   pthread_mutex_unlock(&p->lock);
++}
++
++static inline void
++chl_mempool_configure_env(struct chl_mempool *p)
++{
++   if (p->configured)
++      return;
++   const char *mb = getenv("CHL_MEMPOOL_MB"), *age = getenv("CHL_MEMPOOL_AGE_MS");
++   chl_mempool_configure(p, mb ? (uint64_t)atol(mb) << 20 : 0, (age ? atol(age) : 5000) * 1000000ll);
++}
++
++static inline bool
++chl_mempool_enabled(struct chl_mempool *p)
++{
++   chl_mempool_configure_env(p);
++   return p->cap != 0;
++}
++
++/* under the lock: move slot k to the victims list */
++static inline void
++chl_mempool_evict_locked(struct chl_mempool *p, unsigned k, struct chl_mempool_victim *victims, unsigned *nv)
++{
++   victims[(*nv)++] = (struct chl_mempool_victim){ p->e[k].owner, p->e[k].mem };
++   p->bytes -= p->e[k].size;
++   p->e[k].mem = 0;
++}
++
++static inline void
++chl_mempool_expire_locked(struct chl_mempool *p, int64_t now, struct chl_mempool_victim *victims, unsigned *nv)
++{
++   for (unsigned k = 0; k < CHL_MEMPOOL_SLOTS; k++)
++      if (p->e[k].mem && now - p->e[k].t > p->age_ns)
++         chl_mempool_evict_locked(p, k, victims, nv);
++}
++
++/* A held block of `owner` for a need of `need` bytes: the smallest that is big enough and at most 25 % + 64 KB too big. */
++static inline bool
++chl_mempool_take(struct chl_mempool *p, const void *owner, uint64_t need, uint64_t *mem, uint64_t *size, chl_mempool_free_fn fr)
++{
++   if (!chl_mempool_enabled(p))
++      return false;
++   struct chl_mempool_victim victims[CHL_MEMPOOL_SLOTS];
++   unsigned nv = 0;
++   bool got = false;
++   pthread_mutex_lock(&p->lock);
++   chl_mempool_expire_locked(p, chl_mempool_now(), victims, &nv);
++   int best = -1;
++   uint64_t limit = need + need / 4 + CHL_MEMPOOL_MIN_STEP;
++   for (unsigned k = 0; k < CHL_MEMPOOL_SLOTS; k++)
++      if (p->e[k].mem && p->e[k].owner == owner && p->e[k].size >= need && p->e[k].size <= limit &&
++          (best < 0 || p->e[k].size < p->e[best].size))
++         best = (int)k;
++   if (best >= 0) {
++      *mem = p->e[best].mem;
++      *size = p->e[best].size;
++      p->bytes -= p->e[best].size;
++      p->e[best].mem = 0;
++      p->hits++;
++      got = true;
++   } else {
++      p->misses++;
++   }
++   pthread_mutex_unlock(&p->lock);
++   for (unsigned i = 0; i < nv; i++)
++      fr(victims[i].owner, victims[i].mem);
++   return got;
++}
++
++/* Keep a block (size = what it was allocated with). false: the caller frees it. Oldest blocks make room. */
++static inline bool
++chl_mempool_put(struct chl_mempool *p, const void *owner, uint64_t mem, uint64_t size, chl_mempool_free_fn fr)
++{
++   if (!chl_mempool_enabled(p) || size > p->cap / 4)
++      return false;
++   struct chl_mempool_victim victims[CHL_MEMPOOL_SLOTS];
++   unsigned nv = 0;
++   bool kept = false;
++   pthread_mutex_lock(&p->lock);
++   int64_t now = chl_mempool_now();
++   chl_mempool_expire_locked(p, now, victims, &nv);
++   for (;;) {
++      int free_k = -1, old_k = -1;
++      for (unsigned k = 0; k < CHL_MEMPOOL_SLOTS; k++) {
++         if (!p->e[k].mem) {
++            if (free_k < 0)
++               free_k = (int)k;
++         } else if (old_k < 0 || p->e[k].t < p->e[old_k].t) {
++            old_k = (int)k;
++         }
++      }
++      if (free_k >= 0 && p->bytes + size <= p->cap) {
++         p->e[free_k] = (struct chl_mempool_ent){ mem, size, now, owner };
++         p->bytes += size;
++         p->puts++;
++         kept = true;
++         break;
++      }
++      if (old_k < 0)
++         break;
++      chl_mempool_evict_locked(p, (unsigned)old_k, victims, &nv);
++   }
++   pthread_mutex_unlock(&p->lock);
++   for (unsigned i = 0; i < nv; i++)
++      fr(victims[i].owner, victims[i].mem);
++   return kept;
++}
++
++/* Free every held block of `owner` (NULL: of every owner). */
++static inline void
++chl_mempool_drain(struct chl_mempool *p, const void *owner, chl_mempool_free_fn fr)
++{
++   struct chl_mempool_victim victims[CHL_MEMPOOL_SLOTS];
++   unsigned nv = 0;
++   pthread_mutex_lock(&p->lock);
++   for (unsigned k = 0; k < CHL_MEMPOOL_SLOTS; k++)
++      if (p->e[k].mem && (!owner || p->e[k].owner == owner))
++         chl_mempool_evict_locked(p, k, victims, &nv);
++   pthread_mutex_unlock(&p->lock);
++   for (unsigned i = 0; i < nv; i++)
++      fr(victims[i].owner, victims[i].mem);
++}
++
++#endif
+diff --git a/air/chl_vk.c b/air/chl_vk.c
+index 046660d..75a2594 100644
+--- a/air/chl_vk.c
++++ b/air/chl_vk.c
+@@ -19,6 +19,7 @@
+ #include "vulkan/vulkan_core.h"
+ 
+ #include "chl.h"
++#include "chl_mempool.h"
+ #include "air_nir_vk.h"
+ #include "nir_air.h"
+ 
+@@ -242,6 +243,7 @@ struct chl_texture {
+    unsigned n_att;
+    unsigned char swizzle[4];
+    uint32_t surface_handle;       /* an IOSurface's BO (chl_texture_from_iosurface), for the cache clean */
++   uint64_t pool_size;            /* memory made by chl_texture_create: its size, when it may go to tex_mempool on destruction */
+ };
+ 
+ struct chl_sampler {
+@@ -408,6 +410,8 @@ struct chl_device {
+ 
+ /* process-wide counters (chl.h: chl_stats) */
+ static _Atomic uint64_t st_mem_allocs, st_mem_alloc_bytes, st_mem_frees, st_images;
++/* memory blocks of destroyed textures, by size bucket (chl_mempool.h); off unless CHL_MEMPOOL_MB is set */
++static struct chl_mempool tex_mempool = CHL_MEMPOOL_INIT;
+ #define ST_ALLOC(bytes)                                                                  \
+    do {                                                                                  \
+       atomic_fetch_add_explicit(&st_mem_allocs, 1, memory_order_relaxed);                \
+@@ -422,6 +426,26 @@ chl_get_stats(struct chl_stats *out)
+    out->mem_alloc_bytes = atomic_load_explicit(&st_mem_alloc_bytes, memory_order_relaxed);
+    out->mem_frees = atomic_load_explicit(&st_mem_frees, memory_order_relaxed);
+    out->images = atomic_load_explicit(&st_images, memory_order_relaxed);
++   pthread_mutex_lock(&tex_mempool.lock);
++   out->pool_hits = tex_mempool.hits;
++   out->pool_misses = tex_mempool.misses;
++   out->pool_held_bytes = tex_mempool.bytes;
++   pthread_mutex_unlock(&tex_mempool.lock);
++}
++
++static void
++mempool_free(const void *owner, uint64_t mem)
++{
++   const struct chl_device *d = owner;
++   d->vk.vkFreeMemory(d->dev, (VkDeviceMemory)(uintptr_t)mem, NULL);
++   ST_FREE();
++}
++
++/* give every pooled block back to the kernel (the idle trim) */
++void
++chl_trim(void)
++{
++   chl_mempool_drain(&tex_mempool, NULL, mempool_free);
+ }
+ 
+ /* ---------------------------------------------------------------------------------------------------------------------
+@@ -822,6 +846,7 @@ chl_device_close(struct chl_device *d)
+    pthread_mutex_unlock(&d->done_lock);
+    pthread_join(d->thread, NULL);
+    d->vk.vkDeviceWaitIdle(d->dev);
++   chl_mempool_drain(&tex_mempool, d, mempool_free);
+    pthread_mutex_lock(&d->pro_lock);
+    pro_reap(d, true);
+    pthread_mutex_unlock(&d->pro_lock);
+@@ -1109,9 +1134,31 @@ chl_texture_create(struct chl_device *d, const struct chl_texture_desc *desc, ch
+    d->vk.vkGetImageMemoryRequirements(d->dev, t->image, &req);
+    VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size, d->mt_host };
+    atomic_fetch_add_explicit(&st_images, 1, memory_order_relaxed);
+-   ST_ALLOC(req.size);
+-   if (d->vk.vkAllocateMemory(d->dev, &ai, NULL, &t->mem) != VK_SUCCESS ||
+-       d->vk.vkBindImageMemory(d->dev, t->image, t->mem, 0) != VK_SUCCESS) {
++   /* with the pool on: reuse the memory of a destroyed texture whose shape was a little different (bucketed sizes), or
++    * allocate a bucket-sized block so this one can be reused in turn */
++   bool pooling = chl_mempool_enabled(&tex_mempool);
++   uint64_t pm = 0, ps = 0;
++   if (pooling && chl_mempool_take(&tex_mempool, d, req.size, &pm, &ps, mempool_free)) {
++      t->mem = (VkDeviceMemory)(uintptr_t)pm;
++      t->pool_size = ps;
++   } else if (pooling) {
++      ai.allocationSize = chl_mempool_bucket(req.size);
++      ST_ALLOC(ai.allocationSize);
++      if (d->vk.vkAllocateMemory(d->dev, &ai, NULL, &t->mem) != VK_SUCCESS) {
++         t->mem = VK_NULL_HANDLE;
++         ai.allocationSize = req.size;   /* the rounded size would not fit: the exact one, which is not pooled */
++         ST_ALLOC(ai.allocationSize);
++         if (d->vk.vkAllocateMemory(d->dev, &ai, NULL, &t->mem) != VK_SUCCESS)
++            t->mem = VK_NULL_HANDLE;
++      } else {
++         t->pool_size = ai.allocationSize;
++      }
++   } else {
++      ST_ALLOC(req.size);
++      if (d->vk.vkAllocateMemory(d->dev, &ai, NULL, &t->mem) != VK_SUCCESS)
++         t->mem = VK_NULL_HANDLE;
++   }
++   if (!t->mem || d->vk.vkBindImageMemory(d->dev, t->image, t->mem, 0) != VK_SUCCESS) {
+       say(why, why_size, "%s would not allocate %llu bytes for a %ux%u %s", d->name, (unsigned long long)req.size, w, h, f->name);
+       if (t->mem)
+          d->vk.vkFreeMemory(d->dev, t->mem, NULL);
+@@ -2446,7 +2493,7 @@ destroy_obj(struct chl_obj *o)
+          obj_release(&t->parent->o);
+       } else {
+          d->vk.vkDestroyImage(d->dev, t->image, NULL);
+-         if (t->mem) {
++         if (t->mem && !(t->pool_size && chl_mempool_put(&tex_mempool, d, (uint64_t)(uintptr_t)t->mem, t->pool_size, mempool_free))) {
+             d->vk.vkFreeMemory(d->dev, t->mem, NULL);
+             ST_FREE();
+          }
+diff --git a/test/chl_mempool_test.c b/test/chl_mempool_test.c
+new file mode 100644
+index 0000000..3fb3363
+--- /dev/null
++++ b/test/chl_mempool_test.c
+@@ -0,0 +1,88 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Host test of air/chl_mempool.h (no GPU, no Mesa): cc -O1 -Wall -I air test/chl_mempool_test.c -o /tmp/chl_mempool_test -lpthread */
++#include <assert.h>
++#include <stdio.h>
++#include <unistd.h>
++#include "chl_mempool.h"
++
++static unsigned freed;
++static uint64_t freed_mem[256];
++static void
++fr(const void *owner, uint64_t mem)
++{
++   (void)owner;
++   freed_mem[freed++ & 255] = mem;
++}
++
++#define MB (1ull << 20)
++
++int
++main(void)
++{
++   /* buckets: monotonic, >= size, waste <= 1/8 (+ the 64 KB floor) */
++   for (uint64_t s = 1; s < (1ull << 33); s = s * 3 / 2 + 1) {
++      uint64_t b = chl_mempool_bucket(s);
++      assert(b >= s);
++      assert(b - s <= s / 8 + CHL_MEMPOOL_MIN_STEP);
++      assert(chl_mempool_bucket(b) == b);
++   }
++   /* a 828x1792 RGBA16F target and one a few rows shorter land in one bucket */
++   uint64_t a = 828ull * 1792 * 8, b = 828ull * 1780 * 8;
++   assert(chl_mempool_bucket(a) == chl_mempool_bucket(b));
++
++   static struct chl_mempool p = CHL_MEMPOOL_INIT;
++   int dev1, dev2;
++   assert(!chl_mempool_enabled(&p) || p.cap == 0);   /* off without CHL_MEMPOOL_MB */
++   chl_mempool_configure(&p, 128 * MB, 200ll * 1000000);
++   assert(chl_mempool_enabled(&p));
++
++   uint64_t m, sz;
++   assert(!chl_mempool_take(&p, &dev1, 10 * MB, &m, &sz, fr));   /* empty: miss */
++   assert(p.misses == 1);
++   assert(chl_mempool_put(&p, &dev1, 0x1000, chl_mempool_bucket(10 * MB), fr));
++   assert(!chl_mempool_take(&p, &dev2, 10 * MB, &m, &sz, fr));   /* another device's block is never taken */
++   assert(!chl_mempool_take(&p, &dev1, 20 * MB, &m, &sz, fr));   /* too small */
++   assert(chl_mempool_take(&p, &dev1, 9 * MB, &m, &sz, fr));     /* big enough, not 25 % over */
++   assert(m == 0x1000 && sz == chl_mempool_bucket(10 * MB) && p.bytes == 0);
++   assert(!chl_mempool_take(&p, &dev1, 9 * MB, &m, &sz, fr));    /* it was taken */
++   assert(chl_mempool_put(&p, &dev1, 0x2000, 20 * MB, fr));
++   assert(!chl_mempool_take(&p, &dev1, 4 * MB, &m, &sz, fr));    /* 20 MB for a 4 MB need: more than 25 % over */
++
++   /* smallest fit wins */
++   assert(chl_mempool_put(&p, &dev1, 0x3000, 6 * MB, fr));
++   assert(chl_mempool_put(&p, &dev1, 0x3001, 5 * MB, fr));
++   assert(chl_mempool_take(&p, &dev1, 4 * MB + 1, &m, &sz, fr) && m == 0x3001);
++
++   /* a block above cap/4 is refused; the cap evicts the oldest */
++   assert(!chl_mempool_put(&p, &dev1, 0x4000, 33 * MB, fr));
++   chl_mempool_drain(&p, NULL, fr);
++   assert(p.bytes == 0);
++   freed = 0;
++   for (uint64_t i = 0; i < 8; i++) {
++      assert(chl_mempool_put(&p, &dev1, 0x5000 + i, 32 * MB, fr));
++      usleep(1000);
++   }
++   assert(p.bytes <= 128 * MB);
++   assert(freed == 4 && freed_mem[0] == 0x5000);   /* 8 x 32 MB into a 128 MB cap: the four oldest went */
++
++   /* entries expire */
++   usleep(250000);
++   assert(!chl_mempool_take(&p, &dev1, 32 * MB, &m, &sz, fr));
++   assert(p.bytes == 0 && freed == 8);
++
++   /* slots are bounded */
++   chl_mempool_configure(&p, 1ull << 40, 10ll * 1000000000);
++   for (uint64_t i = 0; i < 3 * CHL_MEMPOOL_SLOTS; i++)
++      chl_mempool_put(&p, &dev2, 0x9000 + i, 1 * MB, fr);
++   unsigned held = 0;
++   for (unsigned k = 0; k < CHL_MEMPOOL_SLOTS; k++)
++      held += p.e[k].mem != 0;
++   assert(held == CHL_MEMPOOL_SLOTS);
++   chl_mempool_drain(&p, &dev1, fr);   /* another owner: nothing goes */
++   assert(p.bytes == CHL_MEMPOOL_SLOTS * MB);
++   chl_mempool_drain(&p, &dev2, fr);
++   assert(p.bytes == 0);
++   printf("chl_mempool_test: ok (hits %llu, misses %llu, puts %llu)\n", (unsigned long long)p.hits, (unsigned long long)p.misses,
++          (unsigned long long)p.puts);
++   return 0;
++}
+-- 
+2.43.0
+

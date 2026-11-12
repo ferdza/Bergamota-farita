@@ -1,0 +1,71 @@
+From 1fa04d50fc40c081496efa09be092becb1ddc430 Mon Sep 17 00:00:00 2001
+From: Claude <a@b.c>
+Date: Thu, 12 Nov 2026 14:09:41 +0000
+Subject: [PATCH 4/6] bgmtl: texpool tuning knobs, and trim the bucketed memory
+ pool when idle
+
+- BG_TEXPOOL_SLOTS 64 -> 128: a frame makes 20-40 offscreen targets and the pool must also hold the previous
+  frame's, so 64 slots could be the limit before the byte cap (BGMTL_TEXPOOL_MB) was. The cap still applies.
+- BGMTL_TEXPOOL_AGE_MS sets how long an unused texture stays (default stays 5000), so the inject can try
+  longer expiry without a rebuild.
+- The idle trim (every process except backboardd) also calls chl_trim(), so the new texture-memory pool
+  (CHL_MEMPOOL_MB) gives its blocks back after the same quiet period as the texture pool. Matters for
+  iconservicesagent's 15-160 MB jetsam limit; the pool is off unless CHL_MEMPOOL_MB is set.
+
+Not compiled (Objective-C, needs the iOS SDK); see README.
+
+Claude-Session: https://claude.ai/code/session_01LbQpVTcCZP2zgEqnwYHZKn
+---
+ src/bgmtl.m | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/src/bgmtl.m b/src/bgmtl.m
+index 6f5d43a..42fa938 100644
+--- a/src/bgmtl.m
++++ b/src/bgmtl.m
+@@ -263,8 +263,8 @@ static void bg_count_purge(NSUInteger state) { __atomic_add_fetch(&g_bg_purge[st
+ // glass passes, full-screen RGBA16F copies) anew every frame; a released texture with no IOSurface, view, buffer or caller
+ // memory behind it is kept here, and a new texture of exactly the same shape takes it back. Its contents are undefined, as
+ // a new Metal texture's are; a command buffer that still uses it holds its own reference (chl retains what it records).
+-// Off unless BGMTL_TEXPOOL_MB is set (the inject sets it for backboardd); entries older than 5 s go.
+-#define BG_TEXPOOL_SLOTS 64
++// Off unless BGMTL_TEXPOOL_MB is set (the inject sets it for backboardd); entries older than 5 s go (BGMTL_TEXPOOL_AGE_MS).
++#define BG_TEXPOOL_SLOTS 128   // was 64: a frame makes 20-40 offscreen targets and the pool also holds last frame's
+ static struct { struct chl_device *dev; struct chl_texture *tex; struct chl_texture_desc desc; long bytes; uint64_t t; } g_texpool[BG_TEXPOOL_SLOTS];
+ static long g_texpool_bytes;
+ static unsigned long g_texpool_hits, g_texpool_misses;
+@@ -278,6 +278,14 @@ bg_texpool_cap(void)
+    return cap;
+ }
+ 
++static uint64_t
++bg_texpool_age_ns(void)
++{
++   static uint64_t age;
++   if (!age) age = (getenv("BGMTL_TEXPOOL_AGE_MS") ? (uint64_t)atol(getenv("BGMTL_TEXPOOL_AGE_MS")) : 5000) * 1000000ull + 1;
++   return age;
++}
++
+ static void
+ bg_texpool_drop(unsigned k)
+ {
+@@ -290,7 +298,7 @@ static void
+ bg_texpool_expire(uint64_t now)
+ {
+    for (unsigned k = 0; k < BG_TEXPOOL_SLOTS; k++)
+-      if (g_texpool[k].tex && now - g_texpool[k].t > 5000000000ull) bg_texpool_drop(k);
++      if (g_texpool[k].tex && now - g_texpool[k].t > bg_texpool_age_ns()) bg_texpool_drop(k);
+ }
+ 
+ static struct chl_texture *
+@@ -1712,6 +1720,7 @@ bg_idle_trim_schedule(void)
+       os_unfair_lock_lock(&g_texpool_lock);
+       for (unsigned k = 0; k < BG_TEXPOOL_SLOTS; k++) if (g_texpool[k].tex) bg_texpool_drop(k);
+       os_unfair_lock_unlock(&g_texpool_lock);
++      chl_trim();   // the bucketed texture-memory pool (CHL_MEMPOOL_MB), if on
+       if (bg_perf_on()) {
+          char line[300];
+          snprintf(line, sizeof(line), "idle trim: Metal: %ld textures ~%.1f MB, %ld buffers %.1f MB, %lu heap allocations, %lu makeAliasable",
+-- 
+2.43.0
+

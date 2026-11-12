@@ -1,0 +1,53 @@
+From be88f2d6e4493bf2cfa86970a7af00a3038116e3 Mon Sep 17 00:00:00 2001
+From: Claude <a@b.c>
+Date: Thu, 12 Nov 2026 14:10:58 +0000
+Subject: [PATCH 6/6] inject: opt-in flag files for the texture-memory pool and
+ the texpool expiry
+
+backboardd only, read at its start like the other flag files:
+- /private/var/tmp/chl.mempool          CHL_MEMPOOL_MB=192 (bucketed texture-memory pool, air/chl_mempool.h)
+- /private/var/tmp/chl.mempool.<MB>     same with another cap (96, 128, 192, 256 or 384)
+- /private/var/tmp/chl.texpool.age      first line: BGMTL_TEXPOOL_AGE_MS (texture pool expiry; default 5000)
+Both are off when the files are absent, so the shipped behaviour does not change. Each is logged to bgmtl.log
+when it takes effect.
+
+Not compiled (Objective-C, needs the iOS SDK).
+
+Claude-Session: https://claude.ai/code/session_01LbQpVTcCZP2zgEqnwYHZKn
+---
+ inject/bgmtl_inject.m | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/inject/bgmtl_inject.m b/inject/bgmtl_inject.m
+index 5221bb1..9d9e290 100644
+--- a/inject/bgmtl_inject.m
++++ b/inject/bgmtl_inject.m
+@@ -338,6 +338,25 @@ bb_init(void)
+    setenv("BGMTL_BB", "1", 1);
+    // the compositor's texture pool (src/bgmtl.m bg_texpool_*): CoreAnimation's per-frame offscreen targets outgrow libbgair's
+    setenv("BGMTL_TEXPOOL_MB", "192", 0);
++   // A/B, opt-in (off until it has been seen on the phone): the file chl.mempool in /private/var/tmp turns on the bucketed
++   // texture-memory pool (air/chl_mempool.h) with a 192 MB cap, so shapes that differ by a few rows share a GEM BO;
++   // chl.mempool.<MB> sets another cap (the first found of 96, 128, 192, 256, 384 wins); chl.texpool.age holds the texture
++   // pool's expiry in ms
++   {
++      static const char *const caps[] = { "96", "128", "192", "256", "384" };
++      if (exists("/private/var/tmp/chl.mempool")) { setenv("CHL_MEMPOOL_MB", "192", 0); ilog("backboardd: CHL_MEMPOOL_MB=192"); }
++      for (unsigned i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
++         char f[64];
++         snprintf(f, sizeof(f), "/private/var/tmp/chl.mempool.%s", caps[i]);
++         if (exists(f)) { setenv("CHL_MEMPOOL_MB", caps[i], 1); ilog("backboardd: CHL_MEMPOOL_MB=%s", caps[i]); break; }
++      }
++      FILE *af = fopen("/private/var/tmp/chl.texpool.age", "r");
++      if (af) {
++         char age[16] = { 0 };
++         if (fgets(age, sizeof(age), af) && atol(age) > 0) { setenv("BGMTL_TEXPOOL_AGE_MS", age, 1); ilog("backboardd: BGMTL_TEXPOOL_AGE_MS=%ld", atol(age)); }
++         fclose(af);
++      }
++   }
+    // Apple GPU layouts this GPU does not write: compressed framebuffers and IOSurfaces, deep (10-bit) framebuffers
+    setenv("CA_DISABLE_FRAMEBUFFER_COMPRESSION", "1", 1);
+    // A/B switch: "scheduled" only once the GPU finished, as before 0229/0240 (see -commit in src/bgmtl.m)
+-- 
+2.43.0
+

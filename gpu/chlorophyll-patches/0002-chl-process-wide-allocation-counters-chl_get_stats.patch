@@ -1,0 +1,114 @@
+From bdf32454237a4eb490554720ed712ff3e78b4649 Mon Sep 17 00:00:00 2001
+From: Claude <a@b.c>
+Date: Thu, 12 Nov 2026 14:07:41 +0000
+Subject: [PATCH 2/6] chl: process-wide allocation counters (chl_get_stats)
+
+How many vkAllocateMemory calls (each a GEM BO from the kernel) and bytes the runtime asks for, how many it
+frees, and how many VkImages textures make. Relaxed atomics, no locks. The perf line (next patches) prints
+the per-frame difference so the BO churn per frame is a number instead of a guess.
+
+Not compiled (needs Mesa headers); see README.
+
+Claude-Session: https://claude.ai/code/session_01LbQpVTcCZP2zgEqnwYHZKn
+---
+ air/chl.h    |  9 +++++++++
+ air/chl_vk.c | 27 ++++++++++++++++++++++++++-
+ 2 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/air/chl.h b/air/chl.h
+index 185e67f..ae27617 100644
+--- a/air/chl.h
++++ b/air/chl.h
+@@ -52,6 +52,15 @@ struct chl_cmdbuf;
+ /* ---- device ---- */
+ struct chl_device *chl_device_open(char *why, size_t why_size);
+ void chl_device_close(struct chl_device *dev);
++
++/* Process-wide counters of what the runtime asks the kernel for (each vkAllocateMemory is a GEM BO from the kernel), for the
++ * perf line. Cheap relaxed atomics; read the difference between two calls for a rate. */
++struct chl_stats {
++   uint64_t mem_allocs, mem_alloc_bytes;   /* vkAllocateMemory calls and their bytes: buffers, textures, surface imports */
++   uint64_t mem_frees;                     /* vkFreeMemory calls */
++   uint64_t images;                        /* VkImages made for textures (chl_texture_create) */
++};
++void chl_get_stats(struct chl_stats *out);
+ const char *chl_device_name(const struct chl_device *dev);
+ 
+ /* ---- buffers: host-visible, coherent, mapped for their whole life ---- */
+diff --git a/air/chl_vk.c b/air/chl_vk.c
+index fb45c55..046660d 100644
+--- a/air/chl_vk.c
++++ b/air/chl_vk.c
+@@ -406,6 +406,24 @@ struct chl_device {
+    bool quit;
+ };
+ 
++/* process-wide counters (chl.h: chl_stats) */
++static _Atomic uint64_t st_mem_allocs, st_mem_alloc_bytes, st_mem_frees, st_images;
++#define ST_ALLOC(bytes)                                                                  \
++   do {                                                                                  \
++      atomic_fetch_add_explicit(&st_mem_allocs, 1, memory_order_relaxed);                \
++      atomic_fetch_add_explicit(&st_mem_alloc_bytes, (bytes), memory_order_relaxed);     \
++   } while (0)
++#define ST_FREE() atomic_fetch_add_explicit(&st_mem_frees, 1, memory_order_relaxed)
++
++void
++chl_get_stats(struct chl_stats *out)
++{
++   out->mem_allocs = atomic_load_explicit(&st_mem_allocs, memory_order_relaxed);
++   out->mem_alloc_bytes = atomic_load_explicit(&st_mem_alloc_bytes, memory_order_relaxed);
++   out->mem_frees = atomic_load_explicit(&st_mem_frees, memory_order_relaxed);
++   out->images = atomic_load_explicit(&st_images, memory_order_relaxed);
++}
++
+ /* ---------------------------------------------------------------------------------------------------------------------
+  * Reference counting
+  */
+@@ -861,6 +879,7 @@ buffer_new(struct chl_device *d, size_t size, char *why, size_t why_size)
+    d->vk.vkGetBufferMemoryRequirements(d->dev, b->vk, &req);
+    VkMemoryAllocateFlagsInfo fl = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, NULL, VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, 0 };
+    VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &fl, req.size, d->mt_host };
++   ST_ALLOC(req.size);
+    if (d->vk.vkAllocateMemory(d->dev, &ai, NULL, &b->mem) != VK_SUCCESS ||
+        d->vk.vkBindBufferMemory(d->dev, b->vk, b->mem, 0) != VK_SUCCESS ||
+        d->vk.vkMapMemory(d->dev, b->mem, 0, VK_WHOLE_SIZE, 0, &b->map) != VK_SUCCESS) {
+@@ -1089,6 +1108,8 @@ chl_texture_create(struct chl_device *d, const struct chl_texture_desc *desc, ch
+    VkMemoryRequirements req;
+    d->vk.vkGetImageMemoryRequirements(d->dev, t->image, &req);
+    VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size, d->mt_host };
++   atomic_fetch_add_explicit(&st_images, 1, memory_order_relaxed);
++   ST_ALLOC(req.size);
+    if (d->vk.vkAllocateMemory(d->dev, &ai, NULL, &t->mem) != VK_SUCCESS ||
+        d->vk.vkBindImageMemory(d->dev, t->image, t->mem, 0) != VK_SUCCESS) {
+       say(why, why_size, "%s would not allocate %llu bytes for a %ux%u %s", d->name, (unsigned long long)req.size, w, h, f->name);
+@@ -1214,6 +1235,7 @@ chl_texture_from_iosurface(struct chl_device *d, const struct chl_texture_desc *
+       for (mt = 0; mt < d->memprops.memoryTypeCount && !(req.memoryTypeBits & (1u << mt)); mt++)
+          ;
+    VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &imp, req.size, mt };
++   ST_ALLOC(ai.allocationSize);
+    r = d->vk.vkAllocateMemory(d->dev, &ai, NULL, &t->mem);   /* takes the fd */
+    if (r != VK_SUCCESS || d->vk.vkBindImageMemory(d->dev, t->image, t->mem, 0) != VK_SUCCESS) {
+       say(why, why_size, "%s would not import IOSurface %d's memory (%llu bytes): VkResult %d", d->name, surface_id,
+@@ -2408,6 +2430,7 @@ destroy_obj(struct chl_obj *o)
+       struct chl_buffer *b = (struct chl_buffer *)o;
+       d->vk.vkDestroyBuffer(d->dev, b->vk, NULL);
+       d->vk.vkFreeMemory(d->dev, b->mem, NULL);
++      ST_FREE();
+       break;
+    }
+    case K_TEXTURE: {
+@@ -2423,8 +2446,10 @@ destroy_obj(struct chl_obj *o)
+          obj_release(&t->parent->o);
+       } else {
+          d->vk.vkDestroyImage(d->dev, t->image, NULL);
+-         if (t->mem)
++         if (t->mem) {
+             d->vk.vkFreeMemory(d->dev, t->mem, NULL);
++            ST_FREE();
++         }
+       }
+       break;
+    }
+-- 
+2.43.0
+

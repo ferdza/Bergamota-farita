@@ -1,0 +1,247 @@
+From b8921f753f729fbc0d32563acd60a998ab3fbf58 Mon Sep 17 00:00:00 2001
+From: Claude <a@b.c>
+Date: Thu, 12 Nov 2026 14:10:58 +0000
+Subject: [PATCH 5/6] bgmtl: perf2 line: record vs submit, frame-gap p95, GEM
+ allocs per command buffer
+
+One more line a second next to perf:/frames:/texpool: (same flag, /private/var/tmp/bgmtl.perf; nothing
+runs when it is absent but a cached flag test per call):
+
+  perf2: record R ms (draw D = X us/draw, bind B, bytes Y, pass P) of encode E ms, submit S ms;
+         frame gap p50 A ms p95 B ms (n); per cbuf: a GEM allocs M MB, f frees, i images;
+         mempool H hits M misses N MB held
+
+- record: time inside this library's own recording calls (bgDraw incl. chl's binding flush and Turnip's
+  vkCmd*, chlTextureFor on binds, setBytes, chl_render_begin), two clock reads per call when the flag is on.
+  "encode" in the existing line runs from the first encoder to the commit and so also holds CoreAnimation's
+  own work between calls: encode minus record is what this library does not own. This is the number that
+  says where the 100-200 us/draw of production goes (library or CoreAnimation) before anything else is built.
+- submit: commit -> flushed. There is no deferred replay in this runtime (commands go straight into the
+  VkCommandBuffer), so this is the whole "replay" cost.
+- frame gap: commit-to-commit intervals under 250 ms, p50 and p95 (src/bg_perfstat.h, tested on a host by
+  test/bg_perfstat_test.c).
+- GEM allocs / MB / frees / images per command buffer from chl_get_stats, and the bucketed memory pool's
+  hits/misses/held (all zero with the pool off).
+
+Not compiled (Objective-C, needs the iOS SDK; the percentile helper is compiled and tested on a host).
+
+Claude-Session: https://claude.ai/code/session_01LbQpVTcCZP2zgEqnwYHZKn
+---
+ src/bg_perfstat.h       | 39 +++++++++++++++++++++++++++++
+ src/bgmtl.m             | 54 ++++++++++++++++++++++++++++++++++++++---
+ test/bg_perfstat_test.c | 24 ++++++++++++++++++
+ 3 files changed, 114 insertions(+), 3 deletions(-)
+ create mode 100644 src/bg_perfstat.h
+ create mode 100644 test/bg_perfstat_test.c
+
+diff --git a/src/bg_perfstat.h b/src/bg_perfstat.h
+new file mode 100644
+index 0000000..865149c
+--- /dev/null
++++ b/src/bg_perfstat.h
+@@ -0,0 +1,39 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Plain-C helpers of the perf line (bgmtl.m), kept apart so a host can test them (test/bg_perfstat_test.c). */
++#ifndef BG_PERFSTAT_H
++#define BG_PERFSTAT_H
++
++#include <stdint.h>
++#include <stdlib.h>
++
++#define BG_PERF_SAMPLES 512
++
++struct bg_samples {
++   uint64_t v[BG_PERF_SAMPLES];
++   unsigned n;
++};
++
++static inline void
++bg_samples_add(struct bg_samples *s, uint64_t x)
++{
++   if (s->n < BG_PERF_SAMPLES) s->v[s->n++] = x;   // a window longer than 512 commits keeps its first 512
++}
++
++static int
++bg_samples_cmp(const void *a, const void *b)
++{
++   uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
++   return x < y ? -1 : x > y;
++}
++
++// the p-th percentile (0..100, nearest rank) of what was added; 0 when empty. Sorts in place.
++static inline uint64_t
++bg_samples_pct(struct bg_samples *s, unsigned p)
++{
++   if (!s->n) return 0;
++   qsort(s->v, s->n, sizeof(s->v[0]), bg_samples_cmp);
++   unsigned rank = (p * s->n + 99) / 100;   // ceil(p/100 * n)
++   return s->v[(rank ? rank : 1) - 1];
++}
++
++#endif
+diff --git a/src/bgmtl.m b/src/bgmtl.m
+index 42fa938..4ce8436 100644
+--- a/src/bgmtl.m
++++ b/src/bgmtl.m
+@@ -35,6 +35,7 @@
+ #include <string.h>
+ #include <unistd.h>
+ #include "chl.h"
++#include "bg_perfstat.h"
+ 
+ // ---- the private bases (names only; their layouts are Metal's) -----------------------------------------------------
+ @interface _MTLDevice : NSObject
+@@ -370,6 +371,14 @@ bg_perf_on(void)
+    if (on < 0) on = access("/private/var/tmp/bgmtl.perf", F_OK) == 0;
+    return on;
+ }
++
++// Chlorophyll: time spent INSIDE this library's recording calls, in ns per window (bgmtl.perf only; two clock reads per call when
++// on, one flag test when off): 0 draw, 1 texture bind (chlTextureFor: surface seeds, copies), 2 setBytes, 3 render-pass begin.
++// The perf line's "encode" runs from the first encoder to the commit and so also counts CoreAnimation's own work between calls;
++// the difference between the two is what the library does not own.
++static uint64_t g_bg_lib_ns[4];
++#define BG_LIB_T0() uint64_t bg_lt0 = bg_perf_on() ? clock_gettime_nsec_np(CLOCK_MONOTONIC) : 0
++#define BG_LIB_T1(i) do { if (bg_lt0) __atomic_add_fetch(&g_bg_lib_ns[i], clock_gettime_nsec_np(CLOCK_MONOTONIC) - bg_lt0, __ATOMIC_RELAXED); } while (0)
+ static void
+ bg_perf_slow(const char *what, const char *name, uint64_t ns)
+ {
+@@ -1598,6 +1607,8 @@ bg_perf_note(uint64_t t_first, uint64_t t_begin, uint64_t t_flushed, uint64_t t_
+    static int on = -1;
+    static uint64_t win_start, last_end, n, draws, enc, sub, wait, gap, enc_max, wait_max;
+    static uint64_t last_begin, burst_ns, burst_frames, bin[4];
++   static struct bg_samples gaps;   // commit-to-commit intervals of the window (under 250 ms: a burst, not idle), for the p50/p95
++   static struct chl_stats st_prev;
+    if (on < 0) on = access("/private/var/tmp/bgmtl.perf", F_OK) == 0;
+    if (!on) return;
+    if (last_begin && t_begin > last_begin && t_begin - last_begin < 100000000ull) {
+@@ -1605,6 +1616,7 @@ bg_perf_note(uint64_t t_first, uint64_t t_begin, uint64_t t_flushed, uint64_t t_
+       burst_ns += d; burst_frames++;
+       bin[d <= 17000000ull ? 0 : d <= 25000000ull ? 1 : d <= 34000000ull ? 2 : 3]++;
+    }
++   if (last_begin && t_begin > last_begin && t_begin - last_begin < 250000000ull) bg_samples_add(&gaps, t_begin - last_begin);
+    last_begin = t_begin;
+    if (win_start == 0) win_start = t_begin;
+    uint64_t e = t_first && t_first < t_begin ? t_begin - t_first : 0, s = t_flushed - t_begin, w = t_done > t_flushed ? t_done - t_flushed : 0;
+@@ -1614,7 +1626,7 @@ bg_perf_note(uint64_t t_first, uint64_t t_begin, uint64_t t_flushed, uint64_t t_
+    if (e > enc_max) enc_max = e;
+    if (w > wait_max) wait_max = w;
+    if (t_done - win_start >= 1000000000ull) {
+-      char line[300];
++      char line[800];
+       double sec = (t_done - win_start) / 1e9;
+       snprintf(line, sizeof(line), "perf: %.1f cbuf/s, %.1f draws/cbuf; per second: encode %.0f ms, submit %.0f ms, gpu wait %.0f ms, "
+                "between %.0f ms; max encode %.1f ms, max wait %.1f ms", n / sec, n ? (double)draws / n : 0, enc / 1e6 / sec,
+@@ -1626,6 +1638,31 @@ bg_perf_note(uint64_t t_first, uint64_t t_begin, uint64_t t_flushed, uint64_t t_
+                   (unsigned long long)bin[0], (unsigned long long)bin[1], (unsigned long long)bin[2], (unsigned long long)bin[3]);
+          bgmtl_note_line(line);
+       }
++      {
++         // where a frame's CPU time goes. "record" = time inside this library's calls (draw incl. chl's state flush and Turnip's
++         // vkCmd*, texture binds, setBytes, pass begin) against "encode" (first encoder to commit, which also holds CoreAnimation's
++         // own work between calls). There is no deferred replay in this runtime: commands go straight into the VkCommandBuffer,
++         // so "submit" (vkQueueSubmit path in commit) is the whole replay cost. BOs: vkAllocateMemory calls (each a GEM BO) and
++         // VkImages per command buffer in the window, and the bucketed memory pool's hits and misses (CHL_MEMPOOL_MB).
++         uint64_t lib[4];
++         for (int i = 0; i < 4; i++) lib[i] = __atomic_exchange_n(&g_bg_lib_ns[i], 0, __ATOMIC_RELAXED);
++         struct chl_stats st;
++         chl_get_stats(&st);
++         double nf = n ? (double)n : 1;
++         snprintf(line, sizeof(line), "perf2: record %.0f ms (draw %.0f = %.1f us/draw, bind %.0f, bytes %.0f, pass %.0f) of encode %.0f ms, "
++                  "submit %.0f ms; frame gap p50 %.1f ms p95 %.1f ms (%u); per cbuf: %.1f GEM allocs %.2f MB, %.1f frees, %.1f images; "
++                  "mempool %llu hits %llu misses %.1f MB held",
++                  (lib[0] + lib[1] + lib[2] + lib[3]) / 1e6 / sec, lib[0] / 1e6 / sec, draws ? lib[0] / 1e3 / draws : 0.0,
++                  lib[1] / 1e6 / sec, lib[2] / 1e6 / sec, lib[3] / 1e6 / sec, enc / 1e6 / sec, sub / 1e6 / sec,
++                  bg_samples_pct(&gaps, 50) / 1e6, bg_samples_pct(&gaps, 95) / 1e6, gaps.n,
++                  (st.mem_allocs - st_prev.mem_allocs) / nf, (st.mem_alloc_bytes - st_prev.mem_alloc_bytes) / 1048576.0 / nf,
++                  (st.mem_frees - st_prev.mem_frees) / nf, (st.images - st_prev.images) / nf,
++                  (unsigned long long)(st.pool_hits - st_prev.pool_hits), (unsigned long long)(st.pool_misses - st_prev.pool_misses),
++                  st.pool_held_bytes / 1048576.0);
++         bgmtl_note_line(line);
++         st_prev = st;
++         gaps.n = 0;
++      }
+       if (bg_texpool_cap()) {
+          snprintf(line, sizeof(line), "texpool: %lu hits, %lu misses, %.1f MB held", g_texpool_hits, g_texpool_misses,
+                   g_texpool_bytes / 1048576.0);
+@@ -1824,7 +1861,9 @@ static void
+ bg_bind_texture(BGMTLCommandBuffer *cb, unsigned stage, NSUInteger index, id texture)
+ {
+    if (index >= BG_MAX_TEX || !cb->_ccb) return;
++   BG_LIB_T0();
+    chl_set_texture(cb->_ccb, stage, (unsigned)index, texture ? [(BGMTLTexture *)texture chlTextureFor:cb] : NULL);
++   BG_LIB_T1(1);
+ }
+ static void
+ bg_bind_sampler(BGMTLCommandBuffer *cb, unsigned stage, NSUInteger index, id sampler)
+@@ -2447,7 +2486,9 @@ bg_attachment(BGMTLCommandBuffer *cb, MTLRenderPassAttachmentDescriptor *a, stru
+    }
+    if ([d respondsToSelector:@selector(renderTargetWidth)]) { rp.width = (unsigned)[d renderTargetWidth]; rp.height = (unsigned)[d renderTargetHeight]; }
+    char why[512] = { 0 };
++   BG_LIB_T0();
+    _open = chl_render_begin(cb->_ccb, &rp, why, sizeof(why)) == 0;
++   BG_LIB_T1(3);
+    if (!_open) [cb bgSkip:"render pass" why:why];
+    return self;
+ }
+@@ -2469,11 +2510,11 @@ bg_attachment(BGMTLCommandBuffer *cb, MTLRenderPassAttachmentDescriptor *a, stru
+ { for (NSUInteger k = 0; k < r.length; k++) [self setFragmentBuffer:b[k] offset:o[k] atIndex:r.location + k]; }
+ - (void)setVertexBytes:(const void *)bytes length:(NSUInteger)l atIndex:(NSUInteger)i
+ {
+-   if (_cb->_ccb && i < BG_MAX_BINDINGS) { _vbuf[i] = nil; chl_set_bytes(_cb->_ccb, CHL_STAGE_VERTEX, (unsigned)i, bytes, l); }
++   if (_cb->_ccb && i < BG_MAX_BINDINGS) { BG_LIB_T0(); _vbuf[i] = nil; chl_set_bytes(_cb->_ccb, CHL_STAGE_VERTEX, (unsigned)i, bytes, l); BG_LIB_T1(2); }
+ }
+ - (void)setFragmentBytes:(const void *)bytes length:(NSUInteger)l atIndex:(NSUInteger)i
+ {
+-   if (_cb->_ccb && i < BG_MAX_BINDINGS) { _fbuf[i] = nil; chl_set_bytes(_cb->_ccb, CHL_STAGE_FRAGMENT, (unsigned)i, bytes, l); }
++   if (_cb->_ccb && i < BG_MAX_BINDINGS) { BG_LIB_T0(); _fbuf[i] = nil; chl_set_bytes(_cb->_ccb, CHL_STAGE_FRAGMENT, (unsigned)i, bytes, l); BG_LIB_T1(2); }
+ }
+ - (void)setVertexTexture:(id)t atIndex:(NSUInteger)i { bg_bind_texture(_cb, CHL_STAGE_VERTEX, i, t); }
+ - (void)setFragmentTexture:(id)t atIndex:(NSUInteger)i
+@@ -2518,6 +2559,13 @@ bg_attachment(BGMTLCommandBuffer *cb, MTLRenderPassAttachmentDescriptor *a, stru
+ 
+ - (void)bgDraw:(NSUInteger)prim start:(NSUInteger)start count:(NSUInteger)count instances:(NSUInteger)inst
+    indexBuffer:(id)ib indexType:(NSUInteger)it indexOffset:(NSUInteger)io baseVertex:(NSInteger)bv baseInstance:(NSUInteger)bi
++{
++   BG_LIB_T0();
++   [self bgDrawInner:prim start:start count:count instances:inst indexBuffer:ib indexType:it indexOffset:io baseVertex:bv baseInstance:bi];
++   BG_LIB_T1(0);
++}
++- (void)bgDrawInner:(NSUInteger)prim start:(NSUInteger)start count:(NSUInteger)count instances:(NSUInteger)inst
++   indexBuffer:(id)ib indexType:(NSUInteger)it indexOffset:(NSUInteger)io baseVertex:(NSInteger)bv baseInstance:(NSUInteger)bi
+ {
+    if (!_open) return;
+    if (!_pipeline) { BG_LOG("draw with no pipeline\n"); return; }
+diff --git a/test/bg_perfstat_test.c b/test/bg_perfstat_test.c
+new file mode 100644
+index 0000000..7694aa3
+--- /dev/null
++++ b/test/bg_perfstat_test.c
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* cc -O1 -Wall -I src test/bg_perfstat_test.c -o /tmp/bg_perfstat_test */
++#include <assert.h>
++#include <stdio.h>
++#include "bg_perfstat.h"
++
++int
++main(void)
++{
++   struct bg_samples s = { 0 };
++   assert(bg_samples_pct(&s, 95) == 0);
++   for (uint64_t i = 100; i >= 1; i--) bg_samples_add(&s, i);   // 1..100, added backwards
++   assert(bg_samples_pct(&s, 95) == 95);
++   assert(bg_samples_pct(&s, 50) == 50);
++   assert(bg_samples_pct(&s, 100) == 100);
++   assert(bg_samples_pct(&s, 1) == 1);
++   s.n = 0;
++   bg_samples_add(&s, 7);
++   assert(bg_samples_pct(&s, 95) == 7);
++   for (unsigned i = 0; i < 2 * BG_PERF_SAMPLES; i++) bg_samples_add(&s, i);
++   assert(s.n == BG_PERF_SAMPLES);
++   printf("bg_perfstat_test: ok\n");
++   return 0;
++}
+-- 
+2.43.0
+

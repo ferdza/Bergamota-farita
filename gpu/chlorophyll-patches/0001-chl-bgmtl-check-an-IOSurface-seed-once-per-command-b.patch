@@ -1,0 +1,142 @@
+From 39dc0e6d910d86276f8ae3990f3eb9f79a7cfee6 Mon Sep 17 00:00:00 2001
+From: Claude <a@b.c>
+Date: Thu, 12 Nov 2026 14:07:24 +0000
+Subject: [PATCH 1/6] chl, bgmtl: check an IOSurface seed once per command
+ buffer and hold each object once
+
+Two per-bind costs on the encode path that do not depend on the GPU:
+
+- BGMTLTexture chlTextureFor: ran for every bind of an IOSurface-backed texture: IOSurfaceGetSeed, an
+  NSNumber box for the surface ID, a global lock and an NSMutableDictionary lookup (and a second NSNumber
+  on change). CoreAnimation binds the same surface-backed texture on many draws of a pass. The seed is now
+  checked once per command buffer per texture (same rule _linSeq already uses for buffer-backed textures)
+  and the table is a fixed open-addressing array of (surface ID, seed), no allocation.
+- cb_hold only deduplicated against the most recent hold, so alternating binds (vertex buffer, fragment
+  texture, vertex buffer, ...) appended and retained the same object on every draw. Each object now carries
+  the generation of the recording that last held it; a hold is skipped when it matches. A stale or
+  overwritten stamp can only cause one extra hold, never a missed one.
+
+Behaviour change to be aware of: a CPU write to a surface that lands between two draws of the same command
+buffer is seen by the next command buffer (the cache clean could only ever reach the GPU at that
+granularity). Not compiled or run (needs Mesa headers and iOS); see README.
+
+Claude-Session: https://claude.ai/code/session_01LbQpVTcCZP2zgEqnwYHZKn
+---
+ air/chl_vk.c | 10 ++++++++--
+ src/bgmtl.m  | 43 +++++++++++++++++++++++++++++++------------
+ 2 files changed, 39 insertions(+), 14 deletions(-)
+
+diff --git a/air/chl_vk.c b/air/chl_vk.c
+index 36589da..fb45c55 100644
+--- a/air/chl_vk.c
++++ b/air/chl_vk.c
+@@ -208,6 +208,7 @@ enum chl_kind { K_BUFFER, K_TEXTURE, K_SAMPLER, K_COMPUTE, K_RENDER, K_DEPTH_STE
+ 
+ struct chl_obj {
+    _Atomic int refs;
++   _Atomic uint64_t held_gen;   /* the generation (cb->gen) of the command buffer that last held it: holds it once per command buffer */
+    enum chl_kind kind;
+    struct chl_device *dev;
+ };
+@@ -318,6 +319,7 @@ struct chl_cmdbuf {
+    VkCommandBuffer cb;
+    VkFence fence;
+    bool committed, done, failed;
++   uint64_t gen;                 /* a number never used for another recording (see cb_hold) */
+    chl_done_fn done_fn;
+    void *done_ctx;
+    /* retained objects, released at completion */
+@@ -453,9 +455,11 @@ cb_hold(struct chl_cmdbuf *cb, void *o)
+ {
+    if (!o)
+       return;
+-   /* the most recent one again (a draw re-binding what the last one bound) is held once */
+-   if (cb->n_held && cb->held[cb->n_held - 1] == o)
++   /* held once per command buffer: the generation is unique to this recording (a stale or overwritten stamp only holds again) */
++   struct chl_obj *ob = o;
++   if (atomic_load_explicit(&ob->held_gen, memory_order_relaxed) == cb->gen)
+       return;
++   atomic_store_explicit(&ob->held_gen, cb->gen, memory_order_relaxed);
+    hold(&cb->held, &cb->n_held, &cb->cap_held, o);
+ }
+ 
+@@ -1892,6 +1896,8 @@ chl_cmdbuf_create(struct chl_device *d, char *why, size_t why_size)
+                                    NULL };
+    d->vk.vkBeginCommandBuffer(cb->cb, &bi);
+    cb->committed = cb->done = cb->failed = false;
++   static _Atomic uint64_t gens;
++   cb->gen = atomic_fetch_add_explicit(&gens, 1, memory_order_relaxed) + 1;
+    cb->done_fn = NULL;
+    cb->enc = ENC_NONE;
+    cb->cp = NULL;
+diff --git a/src/bgmtl.m b/src/bgmtl.m
+index 7b6e86e..6f5d43a 100644
+--- a/src/bgmtl.m
++++ b/src/bgmtl.m
+@@ -235,6 +235,28 @@ bg_tex_bytes(const struct chl_texture_desc *s)
+    long b = (long)s->width * s->height * (layers ? layers : 1) * 4 * (s->sample_count ? s->sample_count : 1);
+    return s->mip_levels > 1 ? b + b / 3 : b;
+ }
++// Chlorophyll: the last IOSurface seed each surface was cleaned at, in a fixed open-addressing table (surface ID -> seed). It
++// replaced an NSMutableDictionary keyed by boxed NSNumbers, which allocated per lookup; same rule as before (a full table is
++// emptied: the worst case is one extra cache clean per surface).
++#define BG_SEED_SLOTS 8192
++static struct { uint32_t id, seed; } g_bg_seeds[BG_SEED_SLOTS];
++static unsigned g_bg_seeds_used;
++static os_unfair_lock g_bg_seeds_lock = OS_UNFAIR_LOCK_INIT;
++static BOOL
++bg_seed_changed(uint32_t id, uint32_t seed)
++{
++   BOOL changed = YES;
++   if (!id) return YES;
++   os_unfair_lock_lock(&g_bg_seeds_lock);
++   if (g_bg_seeds_used > BG_SEED_SLOTS / 2) { memset(g_bg_seeds, 0, sizeof(g_bg_seeds)); g_bg_seeds_used = 0; }
++   unsigned k = (id * 2654435761u) >> 19;   // 13 bits
++   for (;; k = (k + 1) & (BG_SEED_SLOTS - 1)) {
++      if (g_bg_seeds[k].id == id) { changed = g_bg_seeds[k].seed != seed; g_bg_seeds[k].seed = seed; break; }
++      if (!g_bg_seeds[k].id) { g_bg_seeds[k].id = id; g_bg_seeds[k].seed = seed; g_bg_seeds_used++; break; }
++   }
++   os_unfair_lock_unlock(&g_bg_seeds_lock);
++   return changed;
++}
+ static void bg_count_purge(NSUInteger state) { __atomic_add_fetch(&g_bg_purge[state < 5 ? state : 0], 1, __ATOMIC_RELAXED); }
+ 
+ // Chlorophyll: the compositor's own pool of released plain textures. CoreAnimation makes its offscreen targets (blur pyramid,
+@@ -559,6 +581,7 @@ bg_install_fallback(Class c)
+    @public
+    id _linSrc;           // newLinearTextureWithDescriptor: the buffer whose bytes this texture shows (retained)
+    NSUInteger _linOff, _linBpr;
++   unsigned long _seedSeq; // the command buffer (g_bg_cb_seq) the surface's seed was last checked for: once per command buffer
+    unsigned long _linSeq; // the command buffer (g_bg_cb_seq) it was last filled from its buffer for: once per command buffer
+    int _linPending;       // command buffers in flight that write it: no fill from the buffer until they wrote back
+    const void *_ncBytes; // newTextureWithBytesNoCopy: the caller's memory, refreshed from at each use like _linSrc
+@@ -2120,18 +2143,14 @@ bg_bind_sampler(BGMTLCommandBuffer *cb, unsigned stage, NSUInteger index, id sam
+    if (_parent) { [_parent chlTextureFor:cb]; return _tex; }
+    char why[256] = { 0 };
+    if (_surface && !_surfCopy) {
+-      static NSMutableDictionary *seeds;
+-      static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
+-      NSNumber *key = @(IOSurfaceGetID((IOSurfaceRef)_surface));
+-      uint32_t seed = IOSurfaceGetSeed((IOSurfaceRef)_surface);
+-      os_unfair_lock_lock(&lk);
+-      if (!seeds) seeds = [[NSMutableDictionary alloc] init];
+-      NSNumber *was = seeds[key];
+-      BOOL changed = !was || [was unsignedIntValue] != seed;
+-      if (changed) seeds[key] = @(seed);
+-      if ([seeds count] > 4096) [seeds removeAllObjects];
+-      os_unfair_lock_unlock(&lk);
+-      if (changed) chl_texture_flush_surface(_tex);
++      // once per command buffer: the seed is a call into IOSurface and the table below is global behind a lock, and CA binds
++      // the same surface-backed texture on many draws (a CPU write that lands between two of them is seen by the next
++      // command buffer, which is the granularity the cache clean could ever give the GPU)
++      if (!cb || _seedSeq != cb->_seq) {
++         if (cb) _seedSeq = cb->_seq;
++         uint32_t seed = IOSurfaceGetSeed((IOSurfaceRef)_surface);
++         if (bg_seed_changed(IOSurfaceGetID((IOSurfaceRef)_surface), seed)) chl_texture_flush_surface(_tex);
++      }
+    } else if (_xr2p && _surface) {
+       IOSurfaceRef sf = (IOSurfaceRef)_surface;
+       uint32_t seed = IOSurfaceGetSeed(sf);
+-- 
+2.43.0
+
