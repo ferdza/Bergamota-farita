@@ -52,6 +52,22 @@ Fastboot stays reachable, so go back with `fastboot flash boot <Lineage boot.img
 
 Bergamota fastboot page: *Flash an image -> Enxerto (boot) -> your image -> Boot once*. The first iOS boot takes minutes.
 
+## The A/B slot trap (read before blaming an image)
+
+Other 6T ports (`docs/audit/OTHER_6T_PORT_LESSONS.md` section 4, edi194/ios-fajita `NOTES-FAJITA.md` 2026-10-26) lost days to this: after a few failed boots the ABL flips the
+active slot, so the image you flash to `boot_a` is never read; the symptom is the OnePlus logo and a reboot, "nothing of ours ever appears". Before each test, in the
+**bootloader's** fastboot (not fastbootd, which has no `boot`):
+
+```bash
+fastboot getvar current-slot ; fastboot getvar slot-successful:a ; fastboot getvar slot-retry-count:a
+fastboot --set-active=a        # works on this ABL; resets the retry count
+fastboot flash boot_a boot-fajita-3d.img
+fastboot reboot
+```
+
+Also: **one `fastboot boot` per bootloader session** (a second one fails with `Load Error`, even for Lineage's own `boot.img`; power-cycle into the bootloader between tries),
+and each failed reset spends a slot retry. Flashing `vbmeta` is not needed (the other port flashed `boot_a` next to an untouched Lineage `vbmeta`).
+
 ## If it does not boot
 
 Nothing was written to `boot` (*Boot once* only starts the image), so restarting the phone returns to the ABL; flash your backed-up stock `boot`
