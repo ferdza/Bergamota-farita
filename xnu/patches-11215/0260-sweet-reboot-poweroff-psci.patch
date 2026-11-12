@@ -18,7 +18,7 @@ index 8228f52..828452e 100644
  /* PSCI SYSTEM_RESET (SMCCC 1.0): fallback when PS_HOLD does not reset. */
  static void
  sr_psci_system_reset(void)
-@@ -203,6 +212,39 @@ sweet_reboot_note_panic(void)
+@@ -203,6 +212,38 @@ sweet_reboot_note_panic(void)
  	sr_in_panic = true;
  }
  
@@ -37,7 +37,6 @@ index 8228f52..828452e 100644
 +	sweet_spmi_atomic();
 +	sr_pon_set_reason(SR_MAGIC_NORMAL);
 +	if (sr_imem) {
-+		sr_imem[0] = 0;
 +		sr_imem[SR_IMEM_RESTART / 4] = 0;
 +		__asm__ volatile ("dsb sy" ::: "memory");
 +	}
