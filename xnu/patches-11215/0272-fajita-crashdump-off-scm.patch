@@ -1,0 +1,227 @@
+diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
+index 1e7ffb5..ad7e349 100644
+--- a/bsd/dev/sweet_reboot.c
++++ b/bsd/dev/sweet_reboot.c
+@@ -46,6 +46,7 @@
+ #include <pexpert/pexpert.h>
+ #include "sweet_spmi.h"
+ #include "sweet_board.h"
++#include "sweet_scm_logic.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern void delay(int usec);
+@@ -73,6 +74,19 @@ static int sr_override = -1;               /* sysctl; -1 = none */
+ static volatile uint32_t *sr_pshold;
+ static volatile uint32_t *sr_imem;
+ static bool sr_ready, sr_pon_ready, sr_in_panic;
++/*
++ * OnePlus 6T (fajita) crash-dump disarm (AUDIT_BOOT_CHAIN F-01 / AUDIT_KERNEL_DRIVERS F-03). The OnePlus ABL arms
++ * Qualcomm CrashDump and nothing in XNU ever cleared it, so every reset ends in CrashDump (INFERRED, not yet
++ * proven on the phone). Linux qcom_scm and the downstream msm-poweroff clear it with two SCM calls before a restart;
++ * we do the same (sweet_scm_logic.h). Boot-args, fajita only:
++ *   sweetdload=0|1|2  0 = no SCM call (old behaviour), 1 = at restart/poweroff/panic (default), 2 = also at init
++ *   sweetresetpsci=1  restart tries PSCI SYSTEM_RESET before PS_HOLD (experiment, default off: an earlier
++ *                     unconditional version of this reorder panicked, cause unknown)
++ */
++static bool sr_fajita;
++static int sr_dload = SWEET_DLOAD_OFF;
++static bool sr_psci_first;
++static bool sr_scm_panic_done;
+ 
+ static const char *
+ sr_name(int mode)
+@@ -147,6 +161,36 @@ sr_psci_system_reset(void)
+ 	    "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
+ }
+ 
++/*
++ * One SCM fast call (SMC64, owner SIP, registers only: x0 fid, x1 arginfo, x2..x5 args, x6 = x7 = 0).
++ * Lock-less and allocation-free, so it is safe at reset time and in a panic. Returns the SCM status (0 = ok).
++ */
++static int
++sr_scm_fast(uint32_t fid, uint64_t arginfo, uint64_t a0, uint64_t a1)
++{
++	register uint64_t x0 __asm__("x0") = fid;
++	register uint64_t x1 __asm__("x1") = arginfo;
++	register uint64_t x2 __asm__("x2") = a0;
++	register uint64_t x3 __asm__("x3") = a1;
++	register uint64_t x4 __asm__("x4") = 0;
++	register uint64_t x5 __asm__("x5") = 0;
++	register uint64_t x6 __asm__("x6") = 0;
++	register uint64_t x7 __asm__("x7") = 0;
++	__asm__ volatile ("smc #0"
++	    : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7)
++	    : : "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
++	return sweet_scm_status(x0);
++}
++
++/* Download mode off (args 0x10, 0) then SDI off (args 1, 0). A failure only logs: the reset goes on. */
++static void
++sr_crashdump_off(const char *why)
++{
++	int st_dload = sr_scm_fast(SWEET_SCM_FID_DLOAD, 2, SWEET_SCM_BOOT_SET_DLOAD, 0);
++	int st_sdi = sr_scm_fast(SWEET_SCM_FID_SDI, 2, 1, 0);
++	printf("SWEET REBOOT: SCM crashdump off (%s): dload st=%d sdi st=%d\n", why, st_dload, st_sdi);
++}
++
+ /* Thread context, after the SPMI driver can start. Idempotent. */
+ void
+ sweet_reboot_init(void)
+@@ -156,6 +200,15 @@ sweet_reboot_init(void)
+ 	if (sr_ready || !sweet_board_beryllium()) {
+ 		return;
+ 	}
++	sr_fajita = sweet_board_fajita();
++	if (sr_fajita) {
++		uint32_t v = 0;
++		bool have = PE_parse_boot_argn("sweetdload", &v, sizeof(v));
++		sr_dload = sweet_dload_mode_parse(have, v);
++		uint32_t pf = 0;
++		sr_psci_first = PE_parse_boot_argn("sweetresetpsci", &pf, sizeof(pf)) && pf == 1;
++		printf("SWEET REBOOT: fajita: sweetdload=%d sweetresetpsci=%d\n", sr_dload, sr_psci_first);
++	}
+ 	if (PE_parse_boot_argn("sweetreboot", arg, sizeof(arg))) {
+ 		int mode = sr_parse(arg);
+ 		if (mode < 0) {
+@@ -170,6 +223,9 @@ sweet_reboot_init(void)
+ 		sr_pon_ready = true;
+ 	}
+ 	sr_ready = sr_pshold != NULL;
++	if (sr_fajita && sweet_dload_at_init(sr_dload)) {
++		sr_crashdump_off("init");
++	}
+ 	printf("SWEET REBOOT: boot-arg mode %s, PS_HOLD %s, IMEM %s, PON spare write %s\n",
+ 	    sr_name(sr_bootarg), sr_pshold ? "mapped" : "NOT mapped",
+ 	    sr_imem ? "mapped" : "NOT mapped", sr_pon_ready ? "ready" : "unavailable");
+@@ -210,6 +266,11 @@ void
+ sweet_reboot_note_panic(void)
+ {
+ 	sr_in_panic = true;
++	/* a hung panic that a watchdog resets later must not land in CrashDump either (once; fast call, no locks) */
++	if (sr_fajita && sweet_dload_at_reset(sr_dload) && !sr_scm_panic_done) {
++		sr_scm_panic_done = true;
++		sr_crashdump_off("panic");
++	}
+ }
+ 
+ /*
+@@ -230,6 +291,9 @@ sweet_reboot_poweroff(void)
+ 		sr_imem[SR_IMEM_RESTART / 4] = 0;
+ 		__asm__ volatile ("dsb sy" ::: "memory");
+ 	}
++	if (sr_fajita && sweet_dload_at_reset(sr_dload)) {
++		sr_crashdump_off("poweroff");
++	}
+ 	printf("SWEET REBOOT: requesting PSCI SYSTEM_OFF\n");
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	sr_psci_system_off();
+@@ -286,12 +350,27 @@ sweet_reboot_restart(int panic_restart)
+ 		printf("SWEET REBOOT: IMEM restart_reason 0x146bf65c = 0x%08x\n", magic);
+ 	}
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+-	*sr_pshold = 0;
+-	__asm__ volatile ("dsb sy" ::: "memory");
+-	delay(2000 * 1000);
+-	printf("SWEET REBOOT: PS_HOLD did not reset, PSCI SYSTEM_RESET\n");
+-	sr_psci_system_reset();
+-	delay(2000 * 1000);
++	if (sr_fajita && sweet_dload_at_reset(sr_dload)) {
++		sr_crashdump_off("restart");
++	}
++	/* PS_HOLD, then PSCI SYSTEM_RESET (old order); sweetresetpsci=1 on fajita swaps them (experiment) */
++	int steps[2];
++	sweet_reset_order(sr_fajita && sr_psci_first, steps);
++	for (int i = 0; i < 2; i++) {
++		if (steps[i] == SWEET_RESET_PSHOLD) {
++			*sr_pshold = 0;
++			__asm__ volatile ("dsb sy" ::: "memory");
++		} else {
++			if (i == 1) {
++				printf("SWEET REBOOT: PS_HOLD did not reset, PSCI SYSTEM_RESET\n");
++			}
++			sr_psci_system_reset();
++		}
++		delay(2000 * 1000);
++		if (i == 0 && steps[0] == SWEET_RESET_PSCI) {
++			printf("SWEET REBOOT: PSCI SYSTEM_RESET did not reset, PS_HOLD\n");
++		}
++	}
+ 	return -1;
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_scm_logic.h b/bsd/dev/sweet_scm_logic.h
+new file mode 100644
+index 0000000..4ce0f99
+--- /dev/null
++++ b/bsd/dev/sweet_scm_logic.h
+@@ -0,0 +1,70 @@
++/*
++ * Pure logic of the OnePlus 6T crash-dump disarm (sweet_reboot.c): SCM fast-call encodings, the status
++ * classification and the reset ordering. No kernel dependencies, so xnu/sched-test/test_crashdump.c can test it
++ * on the host.
++ *
++ * Facts (Qualcomm SCM over SMCCC, public SMCCC encoding; cross-checked against the layout documented for
++ * SDM845 in docs/reference-snippets/QCOM_CRASHDUMP.md; no code copied):
++ *   fid  = fast(bit31) | SMC64(bit30) | owner SIP(2 << 24) | svc << 8 | cmd
++ *   x1   = arginfo (number of plain-value args), x2..x5 = args, x6 = x7 = 0
++ *   BOOT service 0x01: cmd 0x10 SET_DLOAD_MODE (args 0x10, 0 = off), cmd 0x09 SDI_CONFIG (args 1, 0 = off)
++ */
++#ifndef _SWEET_SCM_LOGIC_H_
++#define _SWEET_SCM_LOGIC_H_
++
++#include <stdint.h>
++#include <stdbool.h>
++
++#define SWEET_SCM_FAST64_SIP(svc, cmd) \
++	(0xC2000000u | (((uint32_t)(svc) & 0xffu) << 8) | ((uint32_t)(cmd) & 0xffu))
++
++#define SWEET_SCM_SVC_BOOT          0x01u
++#define SWEET_SCM_BOOT_SDI_CONFIG   0x09u
++#define SWEET_SCM_BOOT_SET_DLOAD    0x10u
++#define SWEET_SCM_FID_DLOAD         SWEET_SCM_FAST64_SIP(SWEET_SCM_SVC_BOOT, SWEET_SCM_BOOT_SET_DLOAD)
++#define SWEET_SCM_FID_SDI           SWEET_SCM_FAST64_SIP(SWEET_SCM_SVC_BOOT, SWEET_SCM_BOOT_SDI_CONFIG)
++
++/* boot-arg sweetdload: 0 = never call SCM (old behaviour), 1 = at restart / poweroff / panic only (default), 2 = also at init */
++enum { SWEET_DLOAD_OFF = 0, SWEET_DLOAD_RESET = 1, SWEET_DLOAD_INIT = 2 };
++
++static inline int
++sweet_dload_mode_parse(bool present, uint32_t value)
++{
++	if (!present) {
++		return SWEET_DLOAD_RESET;
++	}
++	return value > (uint32_t)SWEET_DLOAD_INIT ? SWEET_DLOAD_RESET : (int)value;
++}
++
++/* The SCM status word is a signed 32-bit value in x0. */
++static inline int
++sweet_scm_status(uint64_t x0)
++{
++	return (int)(int32_t)(uint32_t)x0;
++}
++
++/* Where a reset step is allowed to run: the disarm is wanted at init only in mode 2, at reset time in modes 1 and 2. */
++static inline bool
++sweet_dload_at_init(int mode)
++{
++	return mode >= SWEET_DLOAD_INIT;
++}
++
++static inline bool
++sweet_dload_at_reset(int mode)
++{
++	return mode >= SWEET_DLOAD_RESET;
++}
++
++/* Restart ordering. Default (psci_first == false) is the old order: PS_HOLD, then PSCI SYSTEM_RESET.
++ * sweetresetpsci=1 swaps them (experiment, default OFF). */
++enum { SWEET_RESET_PSHOLD = 1, SWEET_RESET_PSCI = 2 };
++
++static inline void
++sweet_reset_order(bool psci_first, int steps[2])
++{
++	steps[0] = psci_first ? SWEET_RESET_PSCI : SWEET_RESET_PSHOLD;
++	steps[1] = psci_first ? SWEET_RESET_PSHOLD : SWEET_RESET_PSCI;
++}
++
++#endif /* _SWEET_SCM_LOGIC_H_ */
