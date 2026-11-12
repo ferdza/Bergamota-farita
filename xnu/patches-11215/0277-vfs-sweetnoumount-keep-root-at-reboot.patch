@@ -1,0 +1,38 @@
+diff --git a/bsd/vfs/vfs_subr.c b/bsd/vfs/vfs_subr.c
+index 77fe524..7f13e09 100644
+--- a/bsd/vfs/vfs_subr.c
++++ b/bsd/vfs/vfs_subr.c
+@@ -82,6 +82,7 @@
+ #include <sys/proc_internal.h>
+ #include <sys/kauth.h>
+ #include <sys/mount_internal.h>
++#include <pexpert/pexpert.h>
+ #include <sys/time.h>
+ #include <sys/lock.h>
+ #include <sys/vnode.h>
+@@ -4248,7 +4249,24 @@ unmount_callback(mount_t mp, void *arg)
+ 	mntname = zalloc_flags(ZV_NAMEI, Z_WAITOK | Z_NOFAIL);
+ 	strlcpy(mntname, mp->mnt_vfsstat.f_mntonname, MAXPATHLEN);
+ 
+-	if (uip->u_only_non_system
++	/*
++	 * 0277: sweetnoumount=1 keeps the root mounted at reboot (sync only). On the 6T the final unmount of / never returned
++	 * (logs 2026-11-12: the last line is "unmount(0) /", no "vfs_unmountall(system) end"), the SoC watchdog then bit and the
++	 * Qualcomm CrashDump took over instead of the reset. Cause of the hang unknown (guess: the UFS/HFS close path).
++	 */
++	static int sweet_noumount = -1;
++	if (sweet_noumount < 0) {
++		int v = 0;
++		sweet_noumount = (PE_parse_boot_argn("sweetnoumount", &v, sizeof(v)) && v == 1) ? 1 : 0;
++	}
++	if (!uip->u_only_non_system && sweet_noumount && (mp->mnt_flag & MNT_ROOTFS)) {
++		printf("unmount(0) %s: kept mounted (sweetnoumount=1), syncing\n", mntname);
++		mount_ref(mp, 0);
++		mount_iterdrop(mp);
++		(void)VFS_SYNC(mp, MNT_WAIT, vfs_context_current());
++		mount_drop(mp, 0);
++		printf("unmount(0) %s: synced\n", mntname);
++	} else if (uip->u_only_non_system
+ 	    && ((mp->mnt_flag & MNT_ROOTFS) || (mp->mnt_kern_flag & MNTK_SYSTEM))) { //MNTK_BACKS_ROOT
+ 		printf("unmount(%d) %s skipped\n", uip->u_only_non_system, mntname);
+ 		mount_iterdrop(mp);     // VFS_ITERATE_CB_DROPREF
