@@ -1,4 +1,4 @@
-//! HFSX writer: a case-sensitive, unjournaled HFS+ volume built from a file tree, without newfs_hfs, a mount
+//! HFSX writer: a case-sensitive HFS+ volume (unjournaled by default, `Options::journal` reserves a journal like `newfs_hfs -J`) built from a file tree, without newfs_hfs, a mount
 //! or ditto, so the root can be built where none of those exist (Linux without root, the browser).
 //!
 //! What Renegade's Python root build gets from `newfs_hfs -s` + `ditto` + `hfsroot_owners.py`, this writes in one
@@ -56,11 +56,22 @@ pub struct Options {
     /// Where each file's data lies in the image, by file `source`: smaller first (default: path order). The
     /// root build uses the source image's own order so that it reads it front to back.
     pub data_order: Option<Vec<u64>>,
+    /// Reserve a journal of this many bytes (a multiple of the block size, 256 KiB..=2 GiB) the way `newfs_hfs -J`
+    /// does: a Journal Info Block flagged "needs init" plus the two hidden root files; XNU's hfs creates the journal
+    /// header at the first read-write mount (hfs_late_journal_init -> journal_create). `None` (default): the
+    /// unjournaled volume this writer always produced.
+    pub journal: Option<u32>,
 }
+
+/// Journal Info Block flags (hfs_format.h): journal in the file system, and "initialise me at the next mount".
+const JI_IN_FS: u32 = 0x1;
+const JI_NEED_INIT: u32 = 0x4;
+/// Volume attribute bit 13 (kHFSVolumeJournaledMask).
+const VOL_JOURNALED: u32 = 0x2000;
 
 impl Default for Options {
     fn default() -> Self {
-        Self { volume_name: "iOSRoot".into(), block_size: 4096, size: None, date: 0, data_order: None }
+        Self { volume_name: "iOSRoot".into(), block_size: 4096, size: None, date: 0, data_order: None, journal: None }
     }
 }
 
@@ -396,6 +407,21 @@ pub fn build<W: WriteAt>(entries: &[Entry], opts: &Options, out: &mut W, data: &
         next_cnid += 1;
     }
 
+    // the two hidden root files of a journaled volume (newfs_hfs -J): .journal_info_block, .journal
+    let jblocks = match opts.journal {
+        Some(n) => {
+            if n % bs != 0 || !(256 * 1024..=2 << 30).contains(&(n as u64)) {
+                return Err(bad("journal size must be a multiple of the block size, 256 KiB..=2 GiB"));
+            }
+            Some(n / bs)
+        }
+        None => None,
+    };
+    let (jib_cnid, jrnl_cnid) = (next_cnid, next_cnid + 1);
+    if jblocks.is_some() {
+        next_cnid += 2;
+    }
+
     // --- allocation: metadata files, then file data ------------------------------------------------------------
     let mut file_bytes: u64 = 0;
     let mut data_files: Vec<(usize, u64)> = Vec::new(); // (entry, len) whose data is written once
@@ -423,12 +449,13 @@ pub fn build<W: WriteAt>(entries: &[Entry], opts: &Options, out: &mut W, data: &
         data_files.sort_by_key(|&(i, _)| k(i)); // stable: ties keep path order
     }
     // catalog size estimate: records are at most ~ 520 + 248 bytes; leave room for index nodes
-    let nrec = 2 * (order.len() + groups.len() + 3);
+    let nrec = 2 * (order.len() + groups.len() + 3 + if jblocks.is_some() { 2 } else { 0 });
     let cat_bytes_est = (nrec as u64 * 330 + 4 * CAT_NODE as u64) * 5 / 4;
     let cat_blocks_est = blocks_of(cat_bytes_est.max(16 * CAT_NODE as u64));
     let ext_blocks = blocks_of(16 * EXT_NODE as u64);
     let attr_blocks = blocks_of(4 * ATTR_NODE as u64);
-    let meta_blocks_wo_bitmap = 1 + ext_blocks + cat_blocks_est + attr_blocks + 1;
+    let journal_total = jblocks.map_or(0, |n| n + 1); // the Journal Info Block (one block) and the journal
+    let meta_blocks_wo_bitmap = 1 + ext_blocks + cat_blocks_est + attr_blocks + 1 + journal_total;
     let used_est = meta_blocks_wo_bitmap as u64 + file_bytes / bs as u64;
     let total_blocks: u64 = match opts.size {
         Some(s) => s / bs as u64,
@@ -444,6 +471,17 @@ pub fn build<W: WriteAt>(entries: &[Entry], opts: &Options, out: &mut W, data: &
     let cat_start = ext_start + ext_blocks;
     let attr_start = cat_start + cat_blocks_est;
     let mut next_block = attr_start + attr_blocks;
+    // the journal sits with the metadata, one contiguous extent each (as newfs_hfs places them)
+    let jib_block = jblocks.map(|_| {
+        let b = next_block;
+        next_block += 1;
+        b
+    });
+    let jrnl_block = jblocks.map(|n| {
+        let b = next_block;
+        next_block += n;
+        b
+    });
 
     // --- place file data (extents depend on sizes only; the bytes are written last, in image order) -------------
     let mut extent_of: HashMap<usize, (u64, u32, u32)> = HashMap::new(); // entry -> (len, start, count)
@@ -500,6 +538,9 @@ pub fn build<W: WriteAt>(entries: &[Entry], opts: &Options, out: &mut W, data: &
     // private directories in the root
     *valence.entry(2).or_default() += 2;
     *subfolders.entry(2).or_default() += 2;
+    if jblocks.is_some() {
+        *valence.entry(2).or_default() += 2;
+    }
     valence.insert(private, groups.len() as u32);
     let vname = hfs_name(&opts.volume_name);
     // the root folder
@@ -576,6 +617,20 @@ pub fn build<W: WriteAt>(entries: &[Entry], opts: &Options, out: &mut W, data: &
         st.files += 1;
         st.inodes += 1;
     }
+    if let (Some(jb), Some(ib), Some(jr)) = (jblocks, jib_block, jrnl_block) {
+        // newfs_hfs: type 'jrnl', creator 'hfs+', Finder flags invisible | name locked, UF_NODUMP, a plain S_IFREG
+        let mut fi = [0u8; 16];
+        fi[..4].copy_from_slice(b"jrnl");
+        fi[4..8].copy_from_slice(b"hfs+");
+        fi[8..10].copy_from_slice(&0x5000u16.to_be_bytes());
+        let p = Perm { uid: 0, gid: 0, owner_flags: 0x01, mode: 0o100000, special: 1 };
+        for (cnid, nm, start, count, len) in [(jib_cnid, ".journal_info_block", ib, 1u32, bs as u64), (jrnl_cnid, ".journal", jr, jb, jb as u64 * bs as u64)] {
+            let n = hfs_name(nm);
+            recs.push(Rec { parent: 2, name: n.clone(), data: file_rec(0x02, cnid, date, &p, fi, 0, (len, start, count), 0) });
+            recs.push(Rec { parent: cnid, name: vec![], data: thread_rec(4, 2, &n) });
+            st.files += 1;
+        }
+    }
     recs.sort_by(|a, b| a.parent.cmp(&b.parent).then_with(|| a.name.cmp(&b.name)));
     for w in recs.windows(2) {
         if w[0].parent == w[1].parent && w[0].name == w[1].name {
@@ -604,7 +659,9 @@ pub fn build<W: WriteAt>(entries: &[Entry], opts: &Options, out: &mut W, data: &
     let mut vh = vec![0u8; 512];
     vh[0..2].copy_from_slice(b"HX");
     put16(&mut vh, 2, 5);
-    put32(&mut vh, 4, 0x8000_0100); // kHFSUnusedNodeFixBit (31) | kHFSVolumeUnmountedBit (8), as newfs_hfs
+    // kHFSUnusedNodeFixBit (31) | kHFSVolumeUnmountedBit (8), as newfs_hfs; journaled: bit 13 and the JIB block
+    put32(&mut vh, 4, 0x8000_0100 | if jblocks.is_some() { VOL_JOURNALED } else { 0 });
+    put32(&mut vh, 12, jib_block.unwrap_or(0));
     vh[8..12].copy_from_slice(b"10.0");
     put32(&mut vh, 16, date);
     put32(&mut vh, 20, date);
@@ -646,6 +703,18 @@ pub fn build<W: WriteAt>(entries: &[Entry], opts: &Options, out: &mut W, data: &
     out.write_at(cat_start as u64 * bs as u64, &cat.bytes())?;
     drop(cat);
     out.write_at(attr_start as u64 * bs as u64, &attr.bytes())?;
+    if let (Some(jb), Some(ib), Some(jr)) = (jblocks, jib_block, jrnl_block) {
+        // Journal Info Block, big-endian, 0xdb filler like newfs_hfs: flags, offset and size (BYTES from the start of
+        // the volume). No journal header is written: NeedInit makes XNU's hfs create it at the first writable mount.
+        let mut jib = vec![0xdbu8; bs as usize];
+        jib[..180].fill(0);
+        jib[0..4].copy_from_slice(&(JI_IN_FS | JI_NEED_INIT).to_be_bytes());
+        jib[36..44].copy_from_slice(&(jr as u64 * bs as u64).to_be_bytes());
+        jib[44..52].copy_from_slice(&(jb as u64 * bs as u64).to_be_bytes());
+        out.write_at(ib as u64 * bs as u64, &jib)?;
+        // the journal body is not written (zeros in a fresh image, don't-care in a sparse one): with start == end
+        // in the header the content is never read.
+    }
     for &(i, len) in &data_files {
         let Kind::File { source, .. } = entries[i].kind else { continue };
         let ext = match entries[i].link_group.filter(|g| groups.contains_key(g)) {

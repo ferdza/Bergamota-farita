@@ -68,6 +68,14 @@ fn parse_size(s: &str) -> Res<u64> {
     Ok(n.parse::<u64>()? * mul)
 }
 
+/// `--journal 8m`: reserve a journal of that size (hfswrite::Options::journal); absent: unjournaled.
+fn parse_journal(opts: &BTreeMap<String, String>) -> Res<Option<u32>> {
+    match opts.get("--journal") {
+        Some(s) => Ok(Some(u32::try_from(parse_size(s)?).map_err(|_| "--journal is too big")?)),
+        None => Ok(None),
+    }
+}
+
 fn cmd_mkhfs(args: &[String]) -> Res<ExitCode> {
     let (pos, opts, flags) = split(args, &["--size", "--name", "--map", "--date"]);
     let [src, out] = &pos[..] else { return Err("mkhfs SRC_DIR OUT.img [--size 20g] [--name iOSRoot] [--map owners.tsv] [--default-root] [--date UNIX]".into()) };
@@ -89,6 +97,7 @@ fn cmd_mkhfs(args: &[String]) -> Res<ExitCode> {
         size: opts.get("--size").map(|s| parse_size(s)).transpose()?,
         date: opts.get("--date").map(|d| d.parse()).transpose()?.unwrap_or(0),
         data_order: None,
+        journal: parse_journal(&opts)?,
     };
     let f = File::create(out)?;
     let mut w = renegade::io::FileRw::open(out)?;
@@ -113,7 +122,7 @@ fn cmd_mkhfs(args: &[String]) -> Res<ExitCode> {
 
 /// Rebuilds the tree under PREFIX of an existing root image as a new volume with the Rust writer.
 fn cmd_rebuild(args: &[String]) -> Res<ExitCode> {
-    let (pos, opts, _) = split(args, &["--prefix", "--size", "--name", "--date"]);
+    let (pos, opts, _) = split(args, &["--prefix", "--size", "--name", "--date", "--journal"]);
     let [src, out] = &pos[..] else { return Err("rebuild SRC.simg OUT.img [--prefix /usr] [--size N] [--name V] [--date UNIX]".into()) };
     let v = Volume::open(Sparse::open(FileAt::open(src)?)?)?;
     let entries = renegade::tree::from_volume(&v, opts.get("--prefix").map(String::as_str).unwrap_or("/"))?;
@@ -135,6 +144,7 @@ fn cmd_rebuild(args: &[String]) -> Res<ExitCode> {
         size: opts.get("--size").map(|s| parse_size(s)).transpose()?,
         date: opts.get("--date").map(|d| d.parse()).transpose()?.unwrap_or(0),
         data_order: None,
+        journal: parse_journal(&opts)?,
     };
     File::create(out)?;
     let mut w = renegade::io::FileRw::open(out)?;
@@ -190,9 +200,9 @@ fn img2simg_consume(raw: &Path, out: &Path) -> Res<renegade::sparse::Img2SimgSta
 /// The root build from an extracted root folder (the IPSW volumes merged: cryptexes first, OS volume on top):
 /// copy-stage layout fixes, owner map, PAC strip of every Mach-O, HFSX image, sparse image.
 fn cmd_root(args: &[String]) -> Res<ExitCode> {
-    let (pos, opts, flags) = split(args, &["--map", "--size", "--name", "--date", "--raw", "--build", "--version", "--board", "--adt-target", "--netcfg", "--sweetreboot"]);
+    let (pos, opts, flags) = split(args, &["--map", "--size", "--name", "--date", "--journal", "--raw", "--build", "--version", "--board", "--adt-target", "--netcfg", "--sweetreboot"]);
     let [src, out] = &pos[..] else {
-        return Err("root SRC_DIR OUT.simg --build B --version V [--board N104 --adt-target N104] [--map owners.tsv] [--size 20g] [--raw RAW.img] [--keep-raw] [--no-tweaks] [--no-macho] [--quiet] [--netcfg FILE] [--sweetreboot FILE]".into());
+        return Err("root SRC_DIR OUT.simg --build B --version V [--board N104 --adt-target N104] [--map owners.tsv] [--size 20g] [--journal 8m] [--raw RAW.img] [--keep-raw] [--no-tweaks] [--no-macho] [--quiet] [--netcfg FILE] [--sweetreboot FILE]".into());
     };
     let date: u32 = opts.get("--date").map(|d| d.parse()).transpose()?.unwrap_or(0);
     let (mut entries, paths, skipped) = renegade::tree::scan_dir(Path::new(src))?;
@@ -259,6 +269,7 @@ fn cmd_root(args: &[String]) -> Res<ExitCode> {
         size: opts.get("--size").map(|s| parse_size(s)).transpose()?,
         date,
         data_order: None,
+        journal: parse_journal(&opts)?,
     };
     let raw = opts.get("--raw").map(Path::new).map(Path::to_path_buf).unwrap_or_else(|| Path::new(out).with_extension("img"));
     File::create(&raw)?;
@@ -1049,11 +1060,12 @@ impl io::Seek for NullSeek {
 fn cmd_root_ipsw(args: &[String]) -> Res<ExitCode> {
     use std::cell::RefCell;
     use std::rc::Rc;
-    let (pos, opts, flags) = split(args, &["--pem", "--compare", "--now", "--size", "--tools", "--ssh-key", "--only", "--dump"]);
+    let (pos, opts, flags) = split(args, &["--pem", "--compare", "--now", "--size", "--journal", "--tools", "--ssh-key", "--only", "--dump"]);
     let [src, out] = &pos[..] else { return Err("root-ipsw IPSW(file or URL) OUT.simg|null [--pem FILE] [--no-macho] [--no-cache] [--no-tweaks] [--no-idle] [--compare REF.simg] [--now UNIX] [--size 24g]".into()) };
     let ipsw = renegade::ipsw::Ipsw::open(open_src(src)?)?;
     let mut cfg = renegade::rootbuild::Config { now: opts.get("--now").map(|n| n.parse()).transpose()?.unwrap_or(0), ..Default::default() };
     cfg.volume_size = opts.get("--size").map(|s| parse_size(s)).transpose()?;
+    cfg.journal = parse_journal(&opts)?;
     if let Some(t) = opts.get("--tools") {
         cfg.tools = Some(renegade::tools::Tools::from_zip(open_src(t)?)?);
     }

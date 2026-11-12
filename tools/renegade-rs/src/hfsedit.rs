@@ -137,10 +137,16 @@ pub fn apply_owners<I: ReadAt + WriteAt>(img: &mut I, map: &OwnerMap, default_ro
     if &vh[..2] != b"H+" && &vh[..2] != b"HX" {
         return Err(bad("not HFS+/HFSX"));
     }
-    if u32be(&vh, 4) & (1 << 13) != 0 {
-        return Err(bad("volume is journaled (newfs_hfs without -J)"));
-    }
     let bsize = u32be(&vh, 40) as u64;
+    if u32be(&vh, 4) & (1 << 13) != 0 {
+        // A journal that nothing ever wrote to (hfswrite's `journal` option: Journal Info Block still flagged
+        // "needs init", no header yet) is as safe to edit in place as an unjournaled volume; a live one is not.
+        let jib = u32be(&vh, 12) as u64;
+        let flags = if jib != 0 { u32be(&img.read_vec(jib * bsize, 4)?, 0) } else { 0 };
+        if flags & 0x4 == 0 {
+            return Err(bad("volume is journaled (newfs_hfs without -J)"));
+        }
+    }
     let vol = Vol { img, bsize, vh };
     let (logical, extents) = vol.catalog_extents()?;
     let mut cat = vol.read_extents(&extents, logical)?;

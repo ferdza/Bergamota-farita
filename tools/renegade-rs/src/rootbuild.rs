@@ -40,6 +40,8 @@ pub struct Config {
     pub ssh_key: Option<String>,
     /// volume size in bytes (None: used + 6 GiB, at least 24 GiB)
     pub volume_size: Option<u64>,
+    /// Reserve a journal of this many bytes in the root (hfswrite::Options::journal); None: unjournaled (default).
+    pub journal: Option<u32>,
     /// Debugging: keep only the entries at or under this path (and its folders); implies nothing else.
     pub only: Option<String>,
     /// Called once with the final entries just before the image is written (tests compare the tree).
@@ -50,7 +52,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { pems: Vec::new(), now: 0, verify_aea: false, macho: true, cache: Some(dsc::Options::default()), tweaks: true, quiet: false, idle: true, tools: None, ssh_key: None, volume_size: None, only: None, entries_tap: None, tap: None }
+        Config { pems: Vec::new(), now: 0, verify_aea: false, macho: true, cache: Some(dsc::Options::default()), tweaks: true, quiet: false, idle: true, tools: None, ssh_key: None, volume_size: None, journal: None, only: None, entries_tap: None, tap: None }
     }
 }
 
@@ -318,7 +320,7 @@ pub fn build<W: Write + Seek>(ipsw: &Ipsw, cfg: &mut Config, out: W, ev: &mut dy
     let vol_size = cfg.volume_size.unwrap_or_else(|| (est + (6 << 30)).next_multiple_of(1 << 30).max(24 << 30));
     // data goes into the image in the order the volumes store it, so every disk image is read front to back
     let order_key: Vec<u64> = files.iter().map(|&(v, ino)| ((v as u64) << 56) | ino.min((1 << 56) - 1)).collect();
-    let o = hfswrite::Options { volume_name: "iOSRoot".into(), block_size: 4096, size: Some(vol_size), date: cfg.now, data_order: Some(order_key) };
+    let o = hfswrite::Options { volume_name: "iOSRoot".into(), block_size: 4096, size: Some(vol_size), date: cfg.now, data_order: Some(order_key), journal: cfg.journal };
     let mut w = SparseWriter::new(out, 4096)?;
     let mut done = 0u64;
     let mut last_report = 0u64;
