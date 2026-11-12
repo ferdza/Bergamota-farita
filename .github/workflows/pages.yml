@@ -63,6 +63,18 @@ jobs:
           else
             echo "::warning::no chlorophyll-ios18 release yet (run the chlorophyll workflow): the root will have no GPU userland"
           fi
+      # sweetuicache with the normal-app mode (-U): the release sweetuicache-ios18 built by sweetuicache.yml replaces the one in the bundle
+      - name: Add the new sweetuicache to berga-tools
+        working-directory: apps/web
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/uic"
+          if gh release download sweetuicache-ios18 -R "${{ github.repository }}" -p sweetuicache -D "$RUNNER_TEMP/uic" --clobber; then
+            python3 ../../tools/berga-tools/replace-file.py public/tools/berga-tools.zip sweetnet/ios18/sweetuicache "$RUNNER_TEMP/uic/sweetuicache"
+          else
+            echo "::warning::no sweetuicache-ios18 release yet (run the sweetuicache workflow): sideloaded apps install as system apps"
+          fi
       - name: Build (base = /${{ github.event.repository.name }}/)
         working-directory: apps/web
         env:

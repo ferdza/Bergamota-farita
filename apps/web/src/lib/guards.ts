@@ -234,13 +234,77 @@ export function installScript(app: string, appsDir = "/Applications", markerDir 
   ].join("; ");
 }
 
+/** Where a "normal" (user) app lives: bundle container and data container, as the App Store installs them. */
+export const USER_BUNDLES = "/var/containers/Bundle/Application";
+export const USER_DATA = "/var/mobile/Containers/Data/Application";
+// inside a single-quoted shell string: close it, expand the variable, reopen it
+const SPLICE_BU = "'\"$BU\"'";
+const SPLICE_DU = "'\"$DU\"'";
+const UUID_RE = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/;
+
+function mcmMetadata(id: string, uuid: string, cls: number): string {
+  // MCM's own file (RECALLED from real containers, not re-checked on this root): who owns the container and of which class (1 bundle, 2 data)
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0"><dict>',
+    `<key>MCMMetadataIdentifier</key><string>${id}</string>`,
+    "<key>MCMMetadataInfo</key><dict/>",
+    `<key>MCMMetadataUUID</key><string>${uuid}</string>`,
+    "<key>MCMMetadataVersion</key><integer>4</integer>",
+    `<key>MCMMetadataContentClass</key><integer>${cls}</integer>`,
+    "</dict></plist>",
+  ].join("");
+}
+
+/**
+ * Install as a normal app: bundle in /var/containers/Bundle/Application/<UUID>/Name.app, a data container
+ * /var/mobile/Containers/Data/Application/<UUID>/ (Documents, Library/Caches, Library/Preferences, tmp, owned by mobile),
+ * registered as a User app with HOME/TMPDIR in the container (sweetuicache -U). The ids come from the page; on a
+ * reinstall the marker file keeps the ones of the first install ("BUNDLE_UUID DATA_UUID") so the app keeps its data.
+ * A system app registered from /Applications has no data container: cocos2d-style code that asks for Documents gets nil.
+ */
+export function installUserScript(app: string, bundleId: string, bundleUuid: string, dataUuid: string, markerDir = SIDELOAD_DIR, uic = "/usr/local/bin/sweetuicache", bundlesDir = USER_BUNDLES, dataDir = USER_DATA, bundleOwner = "0:0"): string {
+  const bad = appNameProblem(app) ?? bundleIdProblem(bundleId);
+  if (bad) throw new Error(bad);
+  if (!UUID_RE.test(bundleUuid) || !UUID_RE.test(dataUuid)) throw new Error("bad container UUID");
+  const A = q(app);
+  const M = q(`${markerDir}/${app}`);
+  const plain = app.replace(/"/g, "");
+  return [
+    "export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    `BU=${bundleUuid}; DU=${dataUuid}`,
+    // an earlier user install keeps its ids (and so its data)
+    `if [ -s ${M} ]; then read B0 D0 < ${M}; [ -n "$B0" ] && [ -n "$D0" ] && BU=$B0 && DU=$D0; fi`,
+    `S=${bundlesDir}/.bergamota-stage-$$; rm -rf "$S"; mkdir -p "$S" || exit 21`,
+    `echo "[1/5] receiving and unpacking ${plain}"`,
+    `tar -xf - -C "$S" || { rm -rf "$S"; echo "tar failed: nothing changed"; exit 23; }`,
+    `[ -d "$S"/${A} ] || { rm -rf "$S"; echo "the archive has no ${plain}: nothing changed"; exit 24; }`,
+    `${bundleOwner ? `chown -R ${bundleOwner} "$S"/${A} && ` : ""}chmod -R u+rwX,go+rX "$S"/${A} || { rm -rf "$S"; exit 25; }`,
+    `echo "[2/5] bundle container ${bundlesDir}/$BU"`,
+    `T=${bundlesDir}/$BU; mkdir -p "$T" || exit 26`,
+    `rm -rf "$T"/${A}.old; if [ -d "$T"/${A} ]; then mv "$T"/${A} "$T"/${A}.old || { rm -rf "$S"; exit 26; }; fi`,
+    `if mv "$S"/${A} "$T"/${A}; then rm -rf "$T"/${A}.old "$S"; else [ -d "$T"/${A}.old ] && mv "$T"/${A}.old "$T"/${A}; rm -rf "$S"; echo "move failed: old copy restored"; exit 27; fi`,
+    `printf '%s' '${mcmMetadata(bundleId, SPLICE_BU, 1)}' > "$T"/.com.apple.mobile_container_manager.metadata.plist`,
+    `echo "[3/5] data container ${dataDir}/$DU"`,
+    `D=${dataDir}/$DU; mkdir -p "$D/Documents" "$D/Library/Caches" "$D/Library/Preferences" "$D/SystemData" "$D/tmp" || exit 28`,
+    `printf '%s' '${mcmMetadata(bundleId, SPLICE_DU, 2)}' > "$D"/.com.apple.mobile_container_manager.metadata.plist`,
+    `chown -R 501:501 "$D" 2>/dev/null; chmod 755 "$D" "$D/Documents" "$D/Library" "$D/tmp"; chmod -R go+rX "$T"`,
+    `mkdir -p ${q(markerDir)} && echo "$BU $DU" > ${M}`,
+    `echo "[4/5] registering as a user app with LaunchServices"`,
+    `if command -v timeout >/dev/null 2>&1; then timeout 90 ${q(uic)} -U "$T"/${A} "$D" 2>&1; else ${q(uic)} -U "$T"/${A} "$D" 2>&1; fi; echo "[5/5] sweetuicache exit $? (124 = timed out after 90 s)"`,
+  ].join("; ");
+}
+
 /** The shell to remove a side-loaded app: refuses system apps, and apps without the marker that carry an Apple bundle id. */
-export function removeScript(app: string, appsDir = "/Applications", markerDir = SIDELOAD_DIR, uic = "/usr/local/bin/sweetuicache"): string {
+export function removeScript(app: string, appsDir = "/Applications", markerDir = SIDELOAD_DIR, uic = "/usr/local/bin/sweetuicache", bundlesDir = USER_BUNDLES, dataDir = USER_DATA): string {
   const bad = appNameProblem(app);
   if (bad) throw new Error(bad);
   const A = q(app);
   const M = q(`${markerDir}/${app}`);
   return [
+    // a user install (marker "BUNDLE_UUID DATA_UUID"): unregister, delete the bundle container and the data container
+    `if [ -s ${M} ]; then read B0 D0 < ${M}; if [ -n "$B0" ] && [ -n "$D0" ] && [ -d ${bundlesDir}/"$B0"/${A} ]; then ${q(uic)} -u ${bundlesDir}/"$B0"/${A}; rm -rf ${bundlesDir}/"$B0" ${dataDir}/"$D0" ${M} && echo "removed ${app.replace(/"/g, "")} (bundle and data container)"; exit 0; fi; fi`,
     `cd ${q(appsDir)} || exit 20`,
     `[ -d ${A} ] || { echo "no such app: ${app.replace(/"/g, "")}"; exit 21; }`,
     `if [ ! -e ${M} ] && grep -qa 'com\\.apple\\.' ${A}/Info.plist 2>/dev/null; then echo "refusing: ${app.replace(/"/g, "")} looks like a system app (no sideload marker, Apple bundle id)"; exit 22; fi`,

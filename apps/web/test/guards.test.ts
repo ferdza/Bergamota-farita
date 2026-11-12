@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { FastbootDevice } from "../src/lib/fastboot.ts";
 import { checkImage, flash, identify, phoneProblems } from "../src/lib/flasher.ts";
 import { FastbootError } from "../src/lib/fastboot.ts";
-import { bootSlot, identityProblems, identityVerdict, OVERRIDE_PHRASE, appNameProblem, bundleIdProblem, confirmPhrase, hfsVolumeProblem, installScript, normalizeSlot, readExpanded, removeScript, writeProblems } from "../src/lib/guards.ts";
+import { bootSlot, identityProblems, identityVerdict, OVERRIDE_PHRASE, appNameProblem, bundleIdProblem, confirmPhrase, hfsVolumeProblem, installScript, installUserScript, normalizeSlot, readExpanded, removeScript, writeProblems } from "../src/lib/guards.ts";
 import { bufferSource, parseImage } from "../src/lib/sparse.ts";
 import { FakePhone, makeSparse, withHfsHeader } from "./helpers.ts";
 
@@ -273,4 +273,34 @@ test("F-02: has-slot:boot must be confirmed on an A/B phone", () => {
   assert.deepEqual(writeProblems("boot", { currentSlot: "a", slotCount: 2, hasSlotBoot: "yes" }, true), []);
   assert.equal(bootSlot({ currentSlot: "a", slotCount: 2, hasSlotBoot: "no" }), null);
   assert.equal(bootSlot({ currentSlot: null, slotCount: null }), null);
+});
+
+test("normal-app install: own bundle container and data container, ids kept on reinstall, removed together", () => {
+  const s = sandbox();
+  const B = join(s.d, "bundles"), D = join(s.d, "data");
+  const BU = "11111111-2222-3333-4444-555555555555", DU = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
+  try {
+    mkdirSync(B, { recursive: true });
+    mkdirSync(D, { recursive: true });
+    let r = sh(installUserScript("My Game.app", "org.example.game", BU, DU, s.marks, s.uic, B, D, ""), tarOf({ "My Game.app/Info.plist": "v1", "My Game.app/My Game": "bin" }));
+    assert.match(r.stdout, /\[5\/5\] sweetuicache exit 0/, r.stdout + r.stderr);
+    assert.ok(existsSync(join(B, BU, "My Game.app", "Info.plist")));
+    for (const d of ["Documents", "Library/Caches", "Library/Preferences", "tmp"]) assert.ok(existsSync(join(D, DU, d)), d);
+    assert.match(readFileSync(join(D, DU, ".com.apple.mobile_container_manager.metadata.plist"), "utf8"), /org\.example\.game.*DUPLACEHOLDER|MCMMetadataContentClass<\/key><integer>2/s);
+    assert.ok(readFileSync(join(D, DU, ".com.apple.mobile_container_manager.metadata.plist"), "utf8").includes(DU), "data metadata names its own uuid");
+    assert.ok(readFileSync(join(B, BU, ".com.apple.mobile_container_manager.metadata.plist"), "utf8").includes(BU));
+    assert.equal(readFileSync(join(s.marks, "My Game.app"), "utf8").trim(), `${BU} ${DU}`);
+    assert.match(readFileSync(join(s.d, "uic.log"), "utf8"), new RegExp(`uic -U ${B}/${BU}/My Game.app ${D}/${DU}`));
+    // a reinstall with fresh ids keeps the first ones (and the data)
+    writeFileSync(join(D, DU, "Documents", "save.dat"), "progress");
+    r = sh(installUserScript("My Game.app", "org.example.game", "99999999-2222-3333-4444-555555555555", "99999999-BBBB-CCCC-DDDD-EEEEEEEEEEEE", s.marks, s.uic, B, D, ""), tarOf({ "My Game.app/Info.plist": "v2" }));
+    assert.equal(readFileSync(join(B, BU, "My Game.app", "Info.plist"), "utf8"), "v2");
+    assert.equal(readFileSync(join(D, DU, "Documents", "save.dat"), "utf8"), "progress");
+    // remove deletes both containers and the marker
+    r = sh(removeScript("My Game.app", s.apps, s.marks, s.uic, B, D));
+    assert.match(r.stdout, /removed/, r.stdout + r.stderr);
+    assert.ok(!existsSync(join(B, BU)) && !existsSync(join(D, DU)) && !existsSync(join(s.marks, "My Game.app")));
+  } finally {
+    rmSync(s.d, { recursive: true, force: true });
+  }
 });

@@ -4,7 +4,7 @@
 import { log } from "./logsession.svelte.ts";
 import { SshClient, SshError, type SshChannel } from "../lib/ssh.ts";
 import { planZip } from "../lib/zipinstall.ts";
-import { appNameProblem, bundleIdProblem, installScript, removeScript } from "../lib/guards.ts";
+import { installUserScript, appNameProblem, bundleIdProblem, installScript, removeScript } from "../lib/guards.ts";
 import wasmUrl from "../patcher/renegade.wasm?url";
 import { Renegade } from "../patcher/wasm.ts";
 import { decodeConsoleRing, READ_RING_CMD, RING_BLOCKS } from "../lib/consolering.ts";
@@ -369,9 +369,11 @@ class SshSession {
       const bad = appNameProblem(meta.app) ?? bundleIdProblem(meta.bundleId);
       if (bad) throw new SshError(bad);
       this.busy = "Checking the phone (tar, sweetuicache)…";
-      const chk = await this.run("export PATH=$PATH:/usr/local/bin:/usr/bin:/bin; command -v tar >/dev/null && echo HAVE_TAR; [ -x /usr/local/bin/sweetuicache ] && echo HAVE_UIC");
+      const probe = "export PATH=$PATH:/usr/local/bin:/usr/bin:/bin; command -v tar >/dev/null && echo HAVE_TAR; [ -x /usr/local/bin/sweetuicache ] && echo HAVE_UIC; /usr/local/bin/sweetuicache -V 2>&1 | grep -q user-containers && echo UIC_USER";
+      let chk = await this.run(probe);
       if (!/HAVE_TAR/.test(chk.text)) throw new SshError("this root has no tar (re-patch it with the tools bundle)");
-      if (!/HAVE_UIC/.test(chk.text)) {
+      if (!/UIC_USER/.test(chk.text)) {
+        // missing, or an older sweetuicache without the normal-app mode: take the one of the tools bundle
         this.busy = "Installing sweetuicache from the tools bundle…";
         const r = await fetch(import.meta.env.BASE_URL + "tools/berga-tools.zip");
         if (!r.ok) throw new SshError(`this site has no tools bundle (${r.status})`);
@@ -379,10 +381,16 @@ class SshSession {
         const uic = unzipSync(new Uint8Array(await r.arrayBuffer()))["sweetnet/ios18/sweetuicache"];
         if (!uic) throw new SshError("the tools bundle has no sweetuicache");
         await this.upload("/usr/local/bin/sweetuicache", uic);
+        chk = await this.run(probe);
       }
+      // a normal app (bundle container + data container) when sweetuicache can do it; else the old system-app install
+      const asUser = /UIC_USER/.test(chk.text);
+      const uuid = () => crypto.randomUUID().toUpperCase();
+      const script = asUser ? installUserScript(meta.app, meta.bundleId, uuid(), uuid()) : installScript(meta.app);
+      const modeNote = asUser ? "installed as a normal app (own bundle and data container)\n" : "installed as a system app in /Applications (this phone's sweetuicache is the old one: no data container, some apps crash for that)\n";
       this.busy = `Sending ${meta.app} (${(tar.length / 1048576).toFixed(1)} MB)…`;
       // staged extract, atomic swap, system apps refused (lib/guards.ts, audit F-04)
-      const head = `${meta.app} (${meta.bundleId} ${meta.version}): ${meta.machos} binaries re-signed (${meta.pacRewritten} had arm64e code rewritten), ${meta.bundlesSealed} bundles sealed, ${meta.files} files\n`;
+      const head = `${meta.app} (${meta.bundleId} ${meta.version}): ${meta.machos} binaries re-signed (${meta.pacRewritten} had arm64e code rewritten), ${meta.bundlesSealed} bundles sealed, ${meta.files} files\n${modeNote}`;
       let live = "";
       const dec = new TextDecoder();
       const t0 = Date.now();
@@ -395,7 +403,7 @@ class SshSession {
         clearTimeout(stallTimer);
         stallTimer = setTimeout(() => stall.abort(), 150_000);
       };
-      const r = await this.client.run(installScript(meta.app), tar, {
+      const r = await this.client.run(script, tar, {
         signal: stall.signal,
         onProgress: (sent, total) => {
           if (sent === total) arm();

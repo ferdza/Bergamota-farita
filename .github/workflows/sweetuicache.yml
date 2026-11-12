@@ -1,0 +1,36 @@
+# sweetuicache for iOS 18 (LaunchServices registration; -U installs a sideloaded app as a normal user app with its own
+# bundle and data container). Built on a macOS runner (needs the iPhoneOS SDK), signed with tools/sweetnet/uicache.entitlements
+# and pacstripped like the other on-device tools. Published as the sweetuicache-ios18 release; pages.yml puts it into berga-tools.zip.
+name: sweetuicache (iOS 18)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fajita, claude/exciting-wozniak-wcmfap]
+    paths:
+      - "tools/sweetnet/sweetuicache.m"
+      - "tools/sweetnet/uicache.entitlements"
+      - ".github/workflows/sweetuicache.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, sign, pacstrip
+        run: |
+          mkdir -p out
+          xcrun -sdk iphoneos clang -arch arm64e -mios-version-min=18.0 -O2 -fobjc-arc -framework Foundation tools/sweetnet/sweetuicache.m -o out/sweetuicache
+          codesign -s - -f --entitlements tools/sweetnet/uicache.entitlements out/sweetuicache
+          python3 -I tools/renegade/pacstrip.py --sign out/sweetuicache
+          file out/sweetuicache || true
+          shasum -a 256 out/sweetuicache
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view sweetuicache-ios18 >/dev/null 2>&1 || gh release create sweetuicache-ios18 --title "sweetuicache (iOS 18)" --notes "Built by sweetuicache.yml; pages.yml adds it to berga-tools.zip." --latest=false
+          gh release upload sweetuicache-ios18 out/sweetuicache --clobber
