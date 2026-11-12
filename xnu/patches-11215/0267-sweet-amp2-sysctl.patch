@@ -1,0 +1,112 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index ea5a65a..f5f6966 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -114,6 +114,7 @@ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_reboot.c			standard
+ bsd/dev/sweet_usb.c			standard
+ bsd/dev/sweet_cpufreq.c			standard
++bsd/dev/sweet_amp.c			standard
+ bsd/dev/sweet_charger.c			standard
+ bsd/dev/sweet_smmu.c			standard
+ bsd/dev/sweet_fb.c			standard
+diff --git a/bsd/dev/sweet_amp.c b/bsd/dev/sweet_amp.c
+new file mode 100644
+index 0000000..b49d532
+--- /dev/null
++++ b/bsd/dev/sweet_amp.c
+@@ -0,0 +1,94 @@
++/*
++ * sysctl kern.sweet_amp: counters of the sweet_amp v2 big.LITTLE scheduler policy
++ * (osfmk/kern/sched_prim.c, docs/SCHEDULER.md). Read-only string, stable format "v2",
++ * lines separated by '\n', each a sequence of space separated key=value words (readers
++ * ignore unknown keys; an incompatible change bumps the version word):
++ *   line 1:  sweet_amp v2 mode=<off|v1|v2> big=<A75 cpu mask hex> little=<A55 mask hex>
++ *            reserve=<n> migrate=<0|1> kick=<0|1>
++ *   line 2:  place want_big_on_big= want_big_on_little= want_little_on_little=
++ *            want_little_on_big=  (thread_setrun placements of non-realtime threads)
++ *            rt_big= rt_little= (realtime wakes that did / did not get an idle A75)
++ *            victim= (wake preempted a lower priority thread on an A75) hidden= (idle A75
++ *            hidden from a low QoS thread by the reserve)
++ *   line 3:  migrate up_idle= up_preempt= down= (committed moves) held= (blocked by the
++ *            rate limit) misfit_marks= (A55 thread wanted an A75, none free) kicks=
++ *            (idle A75 sent a rebalance IPI to such an A55)
++ *   line 4:  params cap_little= cap_big= burst_us= min_run_us= dwell_us= victim_margin=
++ * Runtime switches (root): sysctl -w kern.sweet_amp_mode=0|1|2 (0 stock scheduler, 1 old
++ * base_pri steering, 2 v2), kern.sweet_amp_migrate, kern.sweet_amp_kick, kern.sweet_amp_reserve.
++ */
++#include <pexpert/arm64/board_config.h>
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/sysctl.h>
++#include <kern/sweet_amp_logic.h>
++
++extern void sweet_amp_get_stats(struct swamp_stats *out);
++extern int sweet_amp_mode;
++extern int sweet_amp_reserve;
++extern int sweet_amp_migrate;
++extern int sweet_amp_kick;
++extern uint64_t sweet_amp_big_mask;
++extern uint64_t sweet_amp_little_mask;
++
++static size_t
++sa_cat(char *buf, size_t size, size_t n, const char *fmt, ...) __printflike(4, 5);
++static size_t
++sa_cat(char *buf, size_t size, size_t n, const char *fmt, ...)
++{
++	va_list ap;
++	if (n >= size) {
++		return n;
++	}
++	va_start(ap, fmt);
++	int r = vsnprintf(buf + n, size - n, fmt, ap);
++	va_end(ap);
++	return r < 0 ? n : n + (size_t)r;
++}
++
++static int
++sa_sysctl SYSCTL_HANDLER_ARGS
++{
++#pragma unused(arg1, arg2)
++	char buf[768];
++	size_t n = 0;
++	struct swamp_stats st;
++	int mode = sweet_amp_mode;
++	const char *mname = mode == 2 ? "v2" : mode == 1 ? "v1" : "off";
++
++	sweet_amp_get_stats(&st);
++	n = sa_cat(buf, sizeof(buf), n, "sweet_amp v2 mode=%s big=0x%llx little=0x%llx reserve=%d migrate=%d kick=%d\n",
++	    mname, (unsigned long long)sweet_amp_big_mask, (unsigned long long)sweet_amp_little_mask,
++	    sweet_amp_reserve, sweet_amp_migrate, sweet_amp_kick);
++	n = sa_cat(buf, sizeof(buf), n,
++	    "place want_big_on_big=%llu want_big_on_little=%llu want_little_on_little=%llu want_little_on_big=%llu "
++	    "rt_big=%llu rt_little=%llu victim=%llu hidden=%llu\n",
++	    (unsigned long long)st.place[1][1], (unsigned long long)st.place[1][0],
++	    (unsigned long long)st.place[0][0], (unsigned long long)st.place[0][1],
++	    (unsigned long long)st.rt_big, (unsigned long long)st.rt_little,
++	    (unsigned long long)st.victim, (unsigned long long)st.hidden);
++	n = sa_cat(buf, sizeof(buf), n,
++	    "migrate up_idle=%llu up_preempt=%llu down=%llu held=%llu misfit_marks=%llu kicks=%llu\n",
++	    (unsigned long long)st.mig_up_idle, (unsigned long long)st.mig_up_preempt,
++	    (unsigned long long)st.mig_down, (unsigned long long)st.mig_held,
++	    (unsigned long long)st.misfit_marks, (unsigned long long)st.kicks);
++	n = sa_cat(buf, sizeof(buf), n,
++	    "params cap_little=%u cap_big=%u burst_us=%u min_run_us=%u dwell_us=%u victim_margin=%d\n",
++	    SWAMP_CAP_LITTLE, SWAMP_CAP_BIG, SWAMP_BURST_US, SWAMP_MIN_RUN_US, SWAMP_DWELL_BASE_US,
++	    SWAMP_VICTIM_MARGIN);
++	return sysctl_handle_string(oidp, buf, sizeof(buf), req);
++}
++
++SYSCTL_PROC(_kern, OID_AUTO, sweet_amp,
++    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, 0, 0, sa_sysctl, "A",
++    "sweet_amp big.LITTLE scheduler counters");
++SYSCTL_INT(_kern, OID_AUTO, sweet_amp_mode, CTLFLAG_RW | CTLFLAG_LOCKED, &sweet_amp_mode, 0,
++    "0 stock, 1 base_pri steering, 2 sweet_amp v2");
++SYSCTL_INT(_kern, OID_AUTO, sweet_amp_migrate, CTLFLAG_RW | CTLFLAG_LOCKED, &sweet_amp_migrate, 0,
++    "v2 active migration");
++SYSCTL_INT(_kern, OID_AUTO, sweet_amp_kick, CTLFLAG_RW | CTLFLAG_LOCKED, &sweet_amp_kick, 0,
++    "v2 idle A75 kicks misfit A55 threads");
++SYSCTL_INT(_kern, OID_AUTO, sweet_amp_reserve, CTLFLAG_RW | CTLFLAG_LOCKED, &sweet_amp_reserve, 0,
++    "idle A75s kept free from low QoS threads");
++#endif /* ARM64_BOARD_CONFIG_SWEET */
