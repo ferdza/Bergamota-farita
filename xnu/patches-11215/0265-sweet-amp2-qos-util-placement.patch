@@ -1,0 +1,290 @@
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+index a52b50f..9b6664f 100644
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -90,6 +90,9 @@
+ #include <kern/macro_help.h>
+ #include <kern/machine.h>
+ #include <kern/misc_protos.h>
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <kern/sweet_amp_logic.h>
++#endif
+ #include <kern/monotonic.h>
+ #include <kern/processor.h>
+ #include <kern/queue.h>
+@@ -5264,13 +5267,104 @@ uint64_t sweet_amp_big_mask;
+ uint64_t sweet_amp_little_mask;
+ int sweet_amp_pri = BASEPRI_DEFAULT;
+ 
++/*
++ * sweet_amp v2 (docs/SCHEDULER.md, logic in kern/sweet_amp_logic.h): placement by effective QoS and
++ * a per-thread utilisation estimate instead of base_pri alone, a reserve of idle A75s for UI bursts,
++ * wake-up preemption of lower priority work on A75s and realtime threads on A75s first.
++ * Mode (boot-arg sweetamp=, sysctl kern.sweet_amp_mode): 0 stock, 1 v1 (base_pri threshold), 2 v2.
++ */
++#define SWEET_AMP_MODE_OFF      0
++#define SWEET_AMP_MODE_V1       1
++#define SWEET_AMP_MODE_V2       2
++int sweet_amp_mode = SWEET_AMP_MODE_V2;
++int sweet_amp_reserve = 1;      /* idle A75s kept free from low QoS threads (sweetamp_reserve=) */
++int sweet_amp_migrate = 1;      /* active migration at quantum expiry (sweetamp_migrate=) */
++int sweet_amp_kick = 1;         /* an A75 going idle kicks misfit threads off A55s (sweetamp_kick=) */
++struct swamp_stats sweet_amp_stats;
++
+ void sweet_amp_enable(uint64_t big, uint64_t little, int pri);
+ void
+ sweet_amp_enable(uint64_t big, uint64_t little, int pri)
+ {
++	int v = 0;
++
+ 	sweet_amp_pri = pri;
++	if (PE_parse_boot_argn("sweetamp", &v, sizeof(v))) {
++		sweet_amp_mode = (v == 0) ? SWEET_AMP_MODE_OFF : (v == 1) ? SWEET_AMP_MODE_V1 : SWEET_AMP_MODE_V2;
++	}
++	if (PE_parse_boot_argn("sweetamp_reserve", &v, sizeof(v))) {
++		sweet_amp_reserve = v < 0 ? 0 : v;
++	}
++	if (PE_parse_boot_argn("sweetamp_migrate", &v, sizeof(v))) {
++		sweet_amp_migrate = v != 0;
++	}
++	if (PE_parse_boot_argn("sweetamp_kick", &v, sizeof(v))) {
++		sweet_amp_kick = v != 0;
++	}
+ 	os_atomic_store(&sweet_amp_little_mask, little, relaxed);
+ 	os_atomic_store(&sweet_amp_big_mask, big, release);
++	printf("SWEET AMP: scheduler mode %d (0 off, 1 v1, 2 v2), A75 mask 0x%llx, reserve %d, migrate %d, kick %d\n",
++	    sweet_amp_mode, big, sweet_amp_reserve, sweet_amp_migrate, sweet_amp_kick);
++}
++
++/* Copy of the counters for the sysctl in bsd/dev/sweet_amp.c. */
++void sweet_amp_get_stats(struct swamp_stats *out);
++void
++sweet_amp_get_stats(struct swamp_stats *out)
++{
++	uint64_t *src = (uint64_t *)&sweet_amp_stats;
++	uint64_t *dst = (uint64_t *)out;
++
++	for (size_t i = 0; i < sizeof(*out) / sizeof(uint64_t); i++) {
++		dst[i] = os_atomic_load(&src[i], relaxed);
++	}
++}
++
++/* Core class of a CPU. */
++static inline int
++sweet_amp_cpu_class(int cpu)
++{
++	return ((os_atomic_load(&sweet_amp_big_mask, relaxed) >> cpu) & 1) ? SWAMP_CLASS_BIG : SWAMP_CLASS_LITTLE;
++}
++
++/*
++ * Inputs of the pure placement logic from the thread (thread lock held or thread not running).
++ * cur: the processor the thread runs on / last ran on (NULL: unknown, treated as an A55).
++ */
++static void
++sweet_amp_thread_in(thread_t thread, processor_t cur, uint32_t ran_us, struct swamp_thread_in *in)
++{
++	task_t task = get_threadtask(thread);
++	int role = task->effective_policy.tep_role;
++
++	in->qos = (uint32_t)thread->effective_policy.thep_qos;
++	in->kernel_task = (task == kernel_task);
++	in->ui_task = (role == TASK_FOREGROUND_APPLICATION || role == TASK_CONTROL_APPLICATION ||
++	    role == TASK_GRAPHICS_SERVER);
++	in->bg_task = (role == TASK_BACKGROUND_APPLICATION || role == TASK_THROTTLE_APPLICATION ||
++	    role == TASK_DARWINBG_APPLICATION);
++	in->util_permille = 0;
++#if defined(CONFIG_SCHED_TIMESHARE_CORE)
++	if (thread->sched_mode == TH_MODE_TIMESHARE) {
++		/* cpu_usage: run time aged by 5/8 per scheduler tick (priority.c update_priority) */
++		in->util_permille = swamp_util_permille(thread->cpu_usage, sched_tick_interval);
++	}
++#endif /* CONFIG_SCHED_TIMESHARE_CORE */
++	in->ran_us = ran_us;
++	in->cur_class = (cur != PROCESSOR_NULL) ? sweet_amp_cpu_class(cur->cpu_id) : SWAMP_CLASS_LITTLE;
++}
++
++/* v2: CPUs the (non realtime) thread should use first. */
++static uint64_t
++sweet_amp2_wanted_map(thread_t thread, uint64_t big)
++{
++	struct swamp_thread_in in;
++
++	sweet_amp_thread_in(thread, thread->last_processor, 0, &in);
++	if (swamp_wanted_class(&in) == SWAMP_CLASS_BIG) {
++		return big;
++	}
++	return os_atomic_load(&sweet_amp_little_mask, relaxed);
+ }
+ 
+ /* CPUs the thread should use first, 0 if the steering is off. */
+@@ -5278,14 +5372,101 @@ static inline uint64_t
+ sweet_amp_wanted_map(thread_t thread)
+ {
+ 	uint64_t big = os_atomic_load(&sweet_amp_big_mask, acquire);
+-	if (big == 0) {
++	int mode = os_atomic_load(&sweet_amp_mode, relaxed);
++	if (big == 0 || (mode != SWEET_AMP_MODE_V1 && mode != SWEET_AMP_MODE_V2)) {
+ 		return 0;
+ 	}
++	if (mode == SWEET_AMP_MODE_V2) {
++		return sweet_amp2_wanted_map(thread, big);
++	}
+ 	if (thread->base_pri >= sweet_amp_pri && get_threadtask(thread) != kernel_task) {
+ 		return big;
+ 	}
+ 	return os_atomic_load(&sweet_amp_little_mask, relaxed);
+ }
++
++/*
++ * pset locked. The running processor in `mask` (primary, recommended, no AST pending: the same
++ * candidates choose_processor() considers) whose thread has a priority at least
++ * SWAMP_VICTIM_MARGIN below sched_pri, lowest first. PROCESSOR_NULL if none.
++ */
++static processor_t
++sweet_amp_busy_victim(processor_set_t pset, integer_t sched_pri, uint64_t mask)
++{
++	uint64_t active = (pset->cpu_state_map[PROCESSOR_RUNNING] | pset->cpu_state_map[PROCESSOR_DISPATCHING]) &
++	    pset->recommended_bitmask & pset->primary_map & mask & ~pset->pending_AST_URGENT_cpu_mask;
++	processor_t victim = PROCESSOR_NULL;
++
++	if (SCHED(priority_is_urgent)(sched_pri) == FALSE) {
++		active &= ~pset->pending_AST_PREEMPT_cpu_mask;
++	}
++	for (int cpu = lsb_first(active); cpu >= 0; cpu = lsb_next(active, cpu)) {
++		processor_t p = processor_array[cpu];
++		if (p->current_pri + SWAMP_VICTIM_MARGIN <= sched_pri &&
++		    (victim == PROCESSOR_NULL || p->current_pri < victim->current_pri)) {
++			victim = p;
++		}
++	}
++	return victim;
++}
++
++/* v2: low QoS threads must leave the last `sweet_amp_reserve` idle A75s alone. */
++static bool
++sweet_amp_hide_big(thread_t thread, uint64_t idle_big)
++{
++	struct swamp_thread_in in;
++	int reserve = os_atomic_load(&sweet_amp_reserve, relaxed);
++
++	sweet_amp_thread_in(thread, thread->last_processor, 0, &in);
++	if (!swamp_hide_idle_big(swamp_low_class(in.qos, in.bg_task, in.kernel_task),
++	    (uint32_t)bit_count(idle_big), (uint32_t)(reserve < 0 ? 0 : reserve))) {
++		return false;
++	}
++	os_atomic_inc(&sweet_amp_stats.hidden, relaxed);
++	return true;
++}
++
++/*
++ * v2, realtime user threads (render server, audio): an idle A75 first. pset locked. The candidate set
++ * is the one choose_processor_for_realtime_thread() starts from, restricted to A75s, so what is
++ * returned is a processor that function could have returned.
++ */
++static processor_t
++sweet_amp_rt_choose(processor_set_t pset, thread_t thread)
++{
++	uint64_t big = os_atomic_load(&sweet_amp_big_mask, acquire);
++	cpumap_t cpu_map;
++	int cpuid;
++
++	if (big == 0 || os_atomic_load(&sweet_amp_mode, relaxed) != SWEET_AMP_MODE_V2 ||
++	    swamp_rt_class(get_threadtask(thread) == kernel_task) != SWAMP_CLASS_BIG) {
++		return PROCESSOR_NULL;
++	}
++	cpu_map = pset_available_cpumap(pset) & ~pset->pending_AST_URGENT_cpu_mask & ~pset->realtime_map &
++	    pset->primary_map & big;
++	cpuid = lsb_first(cpu_map);
++	if (cpuid < 0) {
++		os_atomic_inc(&sweet_amp_stats.rt_little, relaxed);
++		return PROCESSOR_NULL;
++	}
++	os_atomic_inc(&sweet_amp_stats.rt_big, relaxed);
++	return processor_array[cpuid];
++}
++
++/* v2 counters: where the thread wanted to go and where it was placed (thread_setrun). */
++static void
++sweet_amp_account_place(thread_t thread, processor_t processor)
++{
++	uint64_t big = os_atomic_load(&sweet_amp_big_mask, acquire);
++
++	if (big == 0 || os_atomic_load(&sweet_amp_mode, relaxed) != SWEET_AMP_MODE_V2 ||
++	    thread->sched_pri >= BASEPRI_RTQUEUES) {
++		return;
++	}
++	int want_big = (sweet_amp_wanted_map(thread) == big) ? 1 : 0;
++	int got_big = ((big >> processor->cpu_id) & 1) ? 1 : 0;
++	os_atomic_inc(&sweet_amp_stats.place[want_big][got_big], relaxed);
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ /*
+@@ -5456,6 +5637,12 @@ try_again:
+ 					goto no_available_cpus;
+ 				}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++				processor = sweet_amp_rt_choose(pset, thread);
++				if (processor) {
++					return processor;
++				}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 				processor = choose_processor_for_realtime_thread(pset, PROCESSOR_NULL, consider_secondaries, false);
+ 				if (processor) {
+ 					return processor;
+@@ -5549,6 +5736,27 @@ no_available_cpus:
+ 			pset->cpu_preferred_last_chosen = amp_cpu;
+ 			return processor_array[amp_cpu];
+ 		}
++
++		/*
++		 * v2: no idle core of the wanted class. A thread that wants an A75 preempts a much lower
++		 * priority thread on one; a low QoS thread does not take the last reserved idle A75s.
++		 */
++		if (os_atomic_load(&sweet_amp_mode, relaxed) == SWEET_AMP_MODE_V2) {
++			uint64_t amp_big = os_atomic_load(&sweet_amp_big_mask, acquire);
++			if (amp_big != 0) {
++				if (sweet_amp_wanted_map(thread) == amp_big) {
++					processor_t amp_victim = sweet_amp_busy_victim(pset, thread->sched_pri, amp_big);
++					if (amp_victim != PROCESSOR_NULL) {
++						os_atomic_inc(&sweet_amp_stats.victim, relaxed);
++						pset->last_chosen = amp_victim->cpu_id;
++						return amp_victim;
++					}
++				} else if (sweet_amp_hide_big(thread, idle_primary_map & amp_big)) {
++					idle_primary_map &= ~amp_big;
++					preferred_idle_primary_map &= ~amp_big;
++				}
++			}
++		}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ 		/*
+@@ -6050,6 +6258,9 @@ thread_setrun(
+ 				simple_unlock(&sched_available_cores_lock);
+ 			}
+ 		}
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		sweet_amp_account_place(thread, processor);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+ 		task_t task = get_threadtask(thread);
+ 		if (!(task->t_flags & TF_USE_PSET_HINT_CLUSTER_TYPE)) {
+ 			task->pset_hint = pset; /* NRG this is done without holding the task lock */
+diff --git a/osfmk/kern/thread.h b/osfmk/kern/thread.h
+index f964501..3f6b393 100644
+--- a/osfmk/kern/thread.h
++++ b/osfmk/kern/thread.h
+@@ -667,6 +667,12 @@ struct thread {
+ 	natural_t               cpu_delta;              /* accumulated cpu_usage delta */
+ #endif /* CONFIG_SCHED_TIMESHARE_CORE */
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* sweet_amp v2 (osfmk/kern/sched_prim.c): active big.LITTLE migration rate limit */
++	uint64_t                sweet_amp_last_move;    /* mach_absolute_time of the last forced move, 0 = never */
++	uint32_t                sweet_amp_flips;        /* quick successive moves (dwell time exponent) */
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ 	uint32_t                c_switch;               /* total context switches */
+ 	uint32_t                p_switch;               /* total processor switches */
+ 	uint32_t                ps_switch;              /* total pset switches */

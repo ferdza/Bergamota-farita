@@ -1,0 +1,203 @@
+diff --git a/osfmk/kern/sched_prim.c b/osfmk/kern/sched_prim.c
+index 9b6664f..2fbd94d 100644
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -2635,6 +2635,11 @@ typedef enum {
+ int max_loop_count[MAX_SCHED_CPUS] = { 0 };
+ #endif
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++static bool sweet_amp_should_move(processor_t processor, processor_set_t pset, thread_t thread, bool commit);
++static processor_t sweet_amp_idle_kick(processor_t processor, processor_set_t pset, sched_ipi_type_t *ipi_type);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ /*
+  *	thread_select:
+  *
+@@ -2805,6 +2810,18 @@ restart:
+ 
+ 		bool avoid_processor     = !is_yielding && SCHED(avoid_processor_enabled) && SCHED(thread_avoid_processor)(processor, thread, *reason);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/*
++		 * sweet_amp v2 active migration: the thread runs on the wrong core class and a core of the right
++		 * class is free (pset is locked, thread is locked, we are the thread's processor). Treated exactly
++		 * like avoid_processor: the thread is not kept, gets AST_REBALANCE and is placed again by
++		 * thread_setrun() -> choose_processor().
++		 */
++		if (!avoid_processor && still_running && !is_yielding && sweet_amp_should_move(processor, pset, thread, true)) {
++			avoid_processor = true;
++		}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ 		bool ok_to_run_realtime_thread = sched_ok_to_run_realtime_thread(pset, processor, true);
+ 
+ 		bool current_thread_can_keep_running = (still_running && !needs_smt_rebalance && !affinity_mismatch && !bound_elsewhere && !avoid_processor);
+@@ -3134,9 +3151,21 @@ idle:
+ 
+ 		clear_pending_AST_bits(pset, processor, 7);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/* An A75 going idle asks an A55 that runs a misfit thread to reconsider (pset locked). */
++		sched_ipi_type_t sweet_kick_ipi = SCHED_IPI_NONE;
++		processor_t sweet_kick = sweet_amp_idle_kick(processor, pset, &sweet_kick_ipi);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ 		/* Invoked with pset locked, returns with pset unlocked */
+ 		processor->next_idle_short = SCHED(processor_balance)(processor, pset);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		if (sweet_kick != PROCESSOR_NULL) {
++			sched_ipi_perform(sweet_kick, sweet_kick_ipi);
++		}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ 		new_thread = processor->idle_thread;
+ 	} while (new_thread == THREAD_NULL);
+ 
+@@ -5281,6 +5310,7 @@ int sweet_amp_reserve = 1;      /* idle A75s kept free from low QoS threads (swe
+ int sweet_amp_migrate = 1;      /* active migration at quantum expiry (sweetamp_migrate=) */
+ int sweet_amp_kick = 1;         /* an A75 going idle kicks misfit threads off A55s (sweetamp_kick=) */
+ struct swamp_stats sweet_amp_stats;
++uint64_t sweet_amp_misfit_mask;  /* A55 CPUs whose thread wants an A75 and found none (idle kick) */
+ 
+ void sweet_amp_enable(uint64_t big, uint64_t little, int pri);
+ void
+@@ -5467,6 +5497,123 @@ sweet_amp_account_place(thread_t thread, processor_t processor)
+ 	int got_big = ((big >> processor->cpu_id) & 1) ? 1 : 0;
+ 	os_atomic_inc(&sweet_amp_stats.place[want_big][got_big], relaxed);
+ }
++
++/*
++ * v2 active migration decision for the thread running on `processor`.
++ * Context: splsched, thread locked, pset (processor's) locked, processor == current_processor(),
++ * thread == processor->active_thread. Reads only; with commit it also stamps the thread's
++ * rate limit and counts (only thread_select() commits, once the thread really leaves).
++ * Returns true when the thread should leave this core: it is on the wrong core class and a core
++ * of the right class is idle (or, towards an A75, runs a thread SWAMP_VICTIM_MARGIN lower).
++ */
++static bool
++sweet_amp_should_move(processor_t processor, processor_set_t pset, thread_t thread, bool commit)
++{
++	uint64_t big = os_atomic_load(&sweet_amp_big_mask, acquire);
++	uint64_t now, ran_ns, since = UINT64_MAX, cpu_bit;
++	uint32_t ran_us;
++	struct swamp_thread_in in;
++	uint64_t right;
++	bool idle_right, victim_right;
++	int wanted;
++	enum swamp_move m;
++
++	if (big == 0 || os_atomic_load(&sweet_amp_mode, relaxed) != SWEET_AMP_MODE_V2 ||
++	    !os_atomic_load(&sweet_amp_migrate, relaxed)) {
++		return false;
++	}
++	if (thread->sched_pri >= BASEPRI_RTQUEUES || thread->sched_mode == TH_MODE_REALTIME ||
++	    (thread->state & TH_IDLE) || thread->bound_processor != PROCESSOR_NULL ||
++	    thread->affinity_set != AFFINITY_SET_NULL || !processor->is_recommended) {
++		return false;
++	}
++
++	now = mach_absolute_time();
++	absolutetime_to_nanoseconds(now > thread->computation_epoch ? now - thread->computation_epoch : 0, &ran_ns);
++	ran_us = (ran_ns / 1000) > UINT32_MAX ? UINT32_MAX : (uint32_t)(ran_ns / 1000);
++	sweet_amp_thread_in(thread, processor, ran_us, &in);
++	wanted = swamp_wanted_class(&in);
++	cpu_bit = 1ULL << processor->cpu_id;
++
++	if (wanted == SWAMP_CLASS_ANY || wanted == in.cur_class) {
++		os_atomic_andnot(&sweet_amp_misfit_mask, cpu_bit, relaxed);
++		return false;
++	}
++	right = (wanted == SWAMP_CLASS_BIG) ? big : os_atomic_load(&sweet_amp_little_mask, relaxed);
++	idle_right = (pset->cpu_state_map[PROCESSOR_IDLE] & pset->primary_map & pset->recommended_bitmask & right) != 0;
++	victim_right = !idle_right && wanted == SWAMP_CLASS_BIG &&
++	    sweet_amp_busy_victim(pset, thread->sched_pri, big) != PROCESSOR_NULL;
++	if (thread->sweet_amp_last_move != 0 && now >= thread->sweet_amp_last_move) {
++		absolutetime_to_nanoseconds(now - thread->sweet_amp_last_move, &ran_ns);
++		since = ran_ns / 1000;
++	}
++
++	m = swamp_move_decision(wanted, in.cur_class, idle_right, victim_right, ran_us, since, thread->sweet_amp_flips);
++	if (m == SWAMP_MOVE_MISFIT_WAIT) {
++		if ((os_atomic_or_orig(&sweet_amp_misfit_mask, cpu_bit, relaxed) & cpu_bit) == 0) {
++			os_atomic_inc(&sweet_amp_stats.misfit_marks, relaxed);
++		}
++		return false;
++	}
++	os_atomic_andnot(&sweet_amp_misfit_mask, cpu_bit, relaxed);
++	if (m == SWAMP_MOVE_UP_IDLE || m == SWAMP_MOVE_UP_PREEMPT || m == SWAMP_MOVE_DOWN_IDLE) {
++		if (commit) {
++			thread->sweet_amp_flips = swamp_next_flips(thread->sweet_amp_flips, since);
++			thread->sweet_amp_last_move = now;
++			if (m == SWAMP_MOVE_DOWN_IDLE) {
++				os_atomic_inc(&sweet_amp_stats.mig_down, relaxed);
++			} else if (m == SWAMP_MOVE_UP_IDLE) {
++				os_atomic_inc(&sweet_amp_stats.mig_up_idle, relaxed);
++			} else {
++				os_atomic_inc(&sweet_amp_stats.mig_up_preempt, relaxed);
++			}
++		}
++		return true;
++	}
++	if (commit && m == SWAMP_MOVE_HELD) {
++		os_atomic_inc(&sweet_amp_stats.mig_held, relaxed);
++	}
++	return false;
++}
++
++/*
++ * v2 idle balance: `processor` (an A75) is going idle with the pset locked. If an A55 runs a thread
++ * that wants an A75 (it marked itself in sweet_amp_misfit_mask at its last quantum expiry), send it a
++ * rebalance IPI: its csw_check() then sees this idle A75 and thread_select() moves the thread.
++ * The IPI is returned for the caller to perform after the pset lock is dropped.
++ */
++static processor_t
++sweet_amp_idle_kick(processor_t processor, processor_set_t pset, sched_ipi_type_t *ipi_type)
++{
++	uint64_t big = os_atomic_load(&sweet_amp_big_mask, acquire);
++	uint64_t cand;
++	processor_t target;
++	int cpu;
++
++	*ipi_type = SCHED_IPI_NONE;
++	if (big == 0 || os_atomic_load(&sweet_amp_mode, relaxed) != SWEET_AMP_MODE_V2 ||
++	    !os_atomic_load(&sweet_amp_migrate, relaxed) || !os_atomic_load(&sweet_amp_kick, relaxed) ||
++	    !((big >> processor->cpu_id) & 1)) {
++		return PROCESSOR_NULL;
++	}
++	cand = os_atomic_load(&sweet_amp_misfit_mask, relaxed) & ~big & pset->cpu_state_map[PROCESSOR_RUNNING] &
++	    ~pset->pending_AST_URGENT_cpu_mask & ~pset->pending_AST_PREEMPT_cpu_mask;
++	cpu = lsb_first(cand);
++	if (cpu < 0) {
++		return PROCESSOR_NULL;
++	}
++	os_atomic_andnot(&sweet_amp_misfit_mask, 1ULL << cpu, relaxed);
++	target = processor_array[cpu];
++	if (target->processor_set != pset) {
++		return PROCESSOR_NULL;
++	}
++	*ipi_type = sched_ipi_action(target, NULL, SCHED_IPI_EVENT_REBALANCE);
++	if (*ipi_type == SCHED_IPI_NONE) {
++		return PROCESSOR_NULL;
++	}
++	os_atomic_inc(&sweet_amp_stats.kicks, relaxed);
++	return target;
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+ 
+ /*
+@@ -6472,6 +6619,13 @@ csw_check_locked(
+ 		return check_reason | AST_PREEMPT;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* sweet_amp v2: wrong core class, right class core free; thread_select() makes the same call. */
++	if (sweet_amp_should_move(processor, pset, thread, false)) {
++		return check_reason | AST_PREEMPT;
++	}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ 	/*
+ 	 * Even though we could continue executing on this processor, a
+ 	 * secondary SMT core should try to shed load to another primary core.
