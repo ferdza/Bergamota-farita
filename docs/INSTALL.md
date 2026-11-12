@@ -44,6 +44,12 @@ never publish the image. `GPU=0` builds a CPU-renderer image without firmware.
 
 ## 3. Boot
 
+**If `fastboot boot` fails with `Failed to load/authenticate boot image: Load Error`** (seen on a 6T running Lineage 22.2, 2026-11-12: even Lineage's own
+`boot.img` fails the same way, while the same image flashed with `fastboot flash boot` boots), this ABL does not support "boot once": flash the image to `boot`
+instead (`fastboot flash boot boot-fajita-3d.img`, slot a is the current one; with the Lineage `vbmeta` flashed with `--disable-verity --disable-verification`).
+Fastboot stays reachable, so go back with `fastboot flash boot <Lineage boot.img>`; EDL is the net below that. Flash the root to `userdata` first.
+
+
 Bergamota fastboot page: *Flash an image -> Enxerto (boot) -> your image -> Boot once*. The first iOS boot takes minutes.
 
 ## If it does not boot
