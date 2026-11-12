@@ -2,6 +2,12 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> 2026-11-12: kernel panic after commits a319f62..f4b5a54 -> reverted, safe parts redone <<<
+* Observation: the daily kernel built from a319f62/f52e0bf/f4b5a54 panics (no panic text recorded yet). Those 4 commits were reverted; last known-good kernel baseline is 6f33a11.
+* Redone (guess: low risk): 0252 ATTN gpio125 on the NORTH tile (no idle polling throttle); 0035 accepts a superblob whose header length <= blob_len (padding, iOS 18 chronod) and parses only that length, still refusing bad magic/length (no empty-dict fallback); 0260 now only adds kPEHaltCPU -> PSCI SYSTEM_OFF (reboot path untouched). Userland/web (BT audio HAL park, AI diag export) and tools/check-patches.py kept.
+* NOT redone (unverified, may be the panic): PSCI SYSTEM_RESET before PS_HOLD + IMEM clearing on reboot; sweetfb_hz=60 sweetfb_vsync=0 in daily args; the touch idle throttle.
+* Next: run the xnu CI, boot, and if it still panics bisect 0035 -> 0260 -> 0252 using the panic text.
+
 ### >>> 2026-11-03: fajita (OnePlus 6T) board added — Enxerto builds, iOS 18 <<<
 New workstream in this fork (`ferdza/bergamota-farita`, branch `fajita`): add the
 **OnePlus 6T (fajita, SDM845/Adreno 630 — same SoC as beryllium)** as a board, on
@@ -391,51 +397,6 @@ separate project); iOS 18 identity is **iPhone XR `iPhone11,8` 18.7.8 22H352**
     OEM zap inside): research/ios18/enxerto-boot-ios18-fajita-daily.img = out-fajita9 + fajita-gpu.adt + base CMDLINE +
     tools/renegade/fajita-daily-args.txt. Sent to the user, NOT booted yet. If it misbehaves: gpu8-direct-scancopy2-link2
     is the last image the user confirmed (no flicker, 30 Hz, GPU at fixed 257 MHz, no 0258/0259).
-  - **Optimisation round 2 & Bug fixes (2026-11-04 late evening, user log audit) — commit a319f62, Kernel CI 41925873797 IN PROGRESS:**
-    * **Touch ATTN pin on SDM845 North tile (patch 0252):** GPIO 125 was wrongly routed to `FJ_TLMM_EAST`, causing
-      "ATTN irq never seen" and constant 10 ms I2C bus traffic. Fixed to `NORTH` (`st.gpio`) and added idle polling
-      throttle (`!attn && !st.active` skips I2C 9 out of 10 ticks), eliminating ~90 % of idle I2C wakeups. Adjusted
-      0258 hunk offsets.
-    * **AMFI entitlements & broken widgets / chronod crash loop (patch 0035):** Modern iOS 18 `com.apple.chronod`
-      (13,562 bytes) was rejected with "unreadable entitlements, granting none" due to `ntohl(blob->length) != blob_len`
-      on padded superblobs. Fixed `sweet_entitlements_create` in SweetEntitlements.cpp with bounded length parsing
-      and safe OSDictionary fallback preserving the raw XML blob so userland `csops(CS_OPS_ENTITLEMENTS_BLOB)` receives
-      valid entitlements, stopping the chronod crash storm and restoring WidgetKit functionality.
-    * **Display 60 Hz Native Framerate:** Added `sweetfb_hz=60 sweetfb_vsync=0` to `tools/renegade/fajita-daily-args.txt`
-      and `tools/renegade/mkboot-full.sh` to remove the 30 Hz vsync throttle.
-    * **Web Flasher & Live Log UI redesign (`apps/web`):** Restructured `LiveLog.svelte` and `sshsession.svelte.ts`
-      into 4 clear functional cards: (1) CPU & Stabilité (quiet crash loops, launchd cleanup, top CPU), (2) GPU Adreno 630 &
-      60 Hz (wire backboardd, kill switch, 3D smoke test, status), (3) Safe Power & Console (fastboot reboot, normal reboot,
-      console, sweetlog), (4) Sideload & Tools (tabs for IPA, Tools bundle, Zip, and File upload). Added live status pills
-      (`⚡ CPU apaisé (~5%)` / `⚠️ Crash loops actifs`, `🎮 Compositor GPU actif`, etc.) with one-click refresh.
-  - **Round 3: PSCI Poweroff / Reboot without Crashdump, launchd 90% CPU fix, Diagnostic IA (2026-11-04 night):**
-    * **PSCI Poweroff & Reboot (xnu-11215 patch 0260):**
-      - Poweroff root cause: `SweetPlatformExpert::haltRestart(kPEHaltCPU)` was unhandled; XNU fell back to
-        `IODTPlatformExpert` which halts cores and spins in `wfi` without commanding PMIC rail shutdown. Fixed by
-        implementing `sweet_reboot_poweroff()` with UFS cache flush (`sweet_ufs_flush_final`), IMEM cookie cleanup,
-        and PSCI `SYSTEM_OFF` (`0x84000008`) SMC.
-      - Reboot Crashdump root cause: `sweet_reboot_restart` pulled `*sr_pshold = 0` from EL1 before attempting PSCI;
-        on OnePlus 6T / SDM845, uncoordinated PS_HOLD trip violates hardware watchdog sequencing and drops into
-        Qualcomm Crashdump Mode. Fixed: PSCI `SYSTEM_RESET` (`0x84000009`) via SMC is called FIRST, invoking QTEE
-        TrustZone EL3 for coordinated reset, and IMEM restart cookies (`0x146bf65c` and `[0]`) are cleared on normal reboot.
-    * **CPU drain: launchd at 87.5% and audiomxd at 22.9% (observed in user ps output):**
-      - Root cause identified: `audiomxd` repeatedly tries to load `BTAudioHALPlugin.driver` and reconnect to
-        unported/disabled `bluetoothd`. For every request, `launchd` runs `getgrouplist("mobile")` over the flat
-        `/etc/group` without cache, pinning a CPU core at 90%.
-      - Fix: `BTAudioHALPlugin.driver` is parked into `HAL.disabled` and `audiomxd` is restarted with `killall -9 audiomxd`.
-        Added to `quietCrashLoops()` in `apps/web/src/livelog/sshsession.svelte.ts`, `tools/renegade-rs/src/tweaks.rs`,
-        and `tools/renegade/root_tweaks18.py`.
-    * **One-Click AI Diagnostic Export ("Exporter Diagnostic IA", apps/web):**
-      - Created single dedicated button that collects system info (uname, uptime, date), full `ps aux` process tree,
-        sweet kernel sysctl metrics, Chlorophyll/backboardd state, disabled daemons, crash reports, and boot console /
-        kernel ring buffer into a timestamped `bergamota-diag-ai-*.txt` file and automatically triggers a browser download.
-      - Added "🛑 Éteindre (Poweroff)" button triggering clean PMIC poweroff (`reboot -p` -> `kPEHaltCPU`).
-      - Added status indicator badge for disabled BT audio loop (`✅ Audio BT apaisé`).
-    * **CI run 41929423618 audit & patch 0035 repair:**
-      - Run 41929423618 failed during patch stage with `error: corrupt patch at line 487` on `sweet-0035-sweet-amfi-entitlements-platform-binaries.patch`.
-      - Root cause: Hunk header at line 293 specified `@@ -0,0 +1,194 @@` while the added SweetEntitlements.cpp had 193 lines, causing `git apply` to fail parsing the end of the hunk.
-      - Fixed line 293 to `@@ -0,0 +1,193 @@`.
-      - Added `tools/check-patches.py` to statically test the structural integrity of every patch across series 11215 and 12377 using dummy target trees before launching CI runs. All 225 patches in 11215 and 267 patches in 12377 are now verified clean.
   - **③ IPA sideload — SCOPED, not built.** Mechanism (apps/Bergamota AppsView +
     RemoteControl install_ipa + tools/sweet-install-ipa.sh): SSH root@192.168.7.2
     (TCP 22) + SCP the .ipa + run the script (ad-hoc re-sign, copy /Applications,

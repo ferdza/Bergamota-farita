@@ -290,7 +290,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..61865419290059643524341f96d04a678503d77b
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetEntitlements.cpp
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,191 @@
 +/*
 + * Entitlements for the SWEET built-in AMFI interface (bsd/kern/sweet_amfi.c).
 + *
@@ -354,35 +354,33 @@ index 0000000000000000000000000000000000000000..61865419290059643524341f96d04a67
 +void *
 +sweet_entitlements_create(const CS_GenericBlob *blob, size_t blob_len)
 +{
-+	if (blob == NULL || blob_len <= sizeof(CS_GenericBlob)) {
++	/*
++	 * The blob may be followed by padding (iOS 18 chronod: 13562 bytes): accept a
++	 * header length up to blob_len and parse only that part. Anything else is still
++	 * refused (no entitlements granted).
++	 */
++	if (blob == NULL || blob_len <= sizeof(CS_GenericBlob) ||
++	    ntohl(blob->magic) != CSMAGIC_EMBEDDED_ENTITLEMENTS ||
++	    ntohl(blob->length) <= sizeof(CS_GenericBlob) ||
++	    ntohl(blob->length) > blob_len) {
 +		return NULL;
 +	}
-+	uint32_t magic = ntohl(blob->magic);
-+	uint32_t blen = ntohl(blob->length);
-+	if (blen < sizeof(CS_GenericBlob) || blen > blob_len) {
-+		blen = (uint32_t)blob_len;
-+	}
++	blob_len = ntohl(blob->length);
 +
-+	OSDictionary *dict = NULL;
-+	if (magic == CSMAGIC_EMBEDDED_ENTITLEMENTS) {
-+		/* OSUnserializeXML needs a terminating NUL inside the buffer. */
-+		size_t text_len = blen - sizeof(CS_GenericBlob);
-+		char *text = (char *)kalloc_data(text_len + 1, Z_WAITOK);
-+		if (text != NULL) {
-+			memcpy(text, blob->data, text_len);
-+			text[text_len] = '\0';
-+			OSObject *parsed = OSUnserializeXML(text, text_len + 1);
-+			kfree_data(text, text_len + 1);
-+			dict = OSDynamicCast(OSDictionary, parsed);
-+			if (dict == NULL) {
-+				OSSafeReleaseNULL(parsed);
-+			}
-+		}
++	/* OSUnserializeXML needs a terminating NUL inside the buffer. */
++	size_t text_len = blob_len - sizeof(CS_GenericBlob);
++	char *text = (char *)kalloc_data(text_len + 1, Z_WAITOK);
++	if (text == NULL) {
++		return NULL;
 +	}
++	memcpy(text, blob->data, text_len);
++	text[text_len] = '\0';
++	OSObject *parsed = OSUnserializeXML(text, text_len + 1);
++	kfree_data(text, text_len + 1);
++
++	OSDictionary *dict = OSDynamicCast(OSDictionary, parsed);
 +	if (dict == NULL) {
-+		dict = OSDictionary::withCapacity(1);
-+	}
-+	if (dict == NULL) {
++		OSSafeReleaseNULL(parsed);
 +		return NULL;
 +	}
 +

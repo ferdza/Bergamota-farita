@@ -2,11 +2,10 @@ diff --git a/bsd/dev/sweet_reboot.c b/bsd/dev/sweet_reboot.c
 index 8228f52..828452e 100644
 --- a/bsd/dev/sweet_reboot.c
 +++ b/bsd/dev/sweet_reboot.c
-@@ -129,7 +129,16 @@ SYSCTL_PROC(_kern, OID_AUTO, sweet_reboot_mode,
+@@ -129,6 +129,16 @@ SYSCTL_PROC(_kern, OID_AUTO, sweet_reboot_mode,
      CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sr_sysctl, "A",
      "Reboot mode of the next reboot: bootloader (fastboot), recovery, bergamota, normal");
  
--/* PSCI SYSTEM_RESET (SMCCC 1.0): fallback when PS_HOLD does not reset. */
 +/* PSCI SYSTEM_OFF (SMCCC 1.0): clean poweroff through QTEE and PMIC. */
 +static void
 +sr_psci_system_off(void)
@@ -16,7 +15,7 @@ index 8228f52..828452e 100644
 +	    "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "cc", "memory");
 +}
 +
-+/* PSCI SYSTEM_RESET (SMCCC 1.0): primary clean reset through QTEE. */
++/* PSCI SYSTEM_RESET (SMCCC 1.0): fallback when PS_HOLD does not reset. */
  static void
  sr_psci_system_reset(void)
  {
@@ -60,49 +59,6 @@ index 8228f52..828452e 100644
  /*
   * Reset the SoC. Returns only if nothing reset it (or no reset was wanted:
   * -1, the old behaviour). panic_restart: the call comes from a panic restart.
-@@ -237,20 +279,33 @@ sweet_reboot_restart(int panic_restart)
- 	/* bergamota: PON reason 0 (normal) so ABL boots the boot partition, where our shim lives. */
- 	sr_pon_set_reason(mode == SR_BOOTLOADER ? SR_MAGIC_BOOTLOADER :
- 	    mode == SR_RECOVERY ? SR_MAGIC_RECOVERY : SR_MAGIC_NORMAL);
--	if (sr_imem && mode != SR_NORMAL) {
--		uint32_t magic = mode == SR_BOOTLOADER ? SR_IMEM_BOOTLOADER :
--		    mode == SR_RECOVERY ? SR_IMEM_RECOVERY : SR_IMEM_BERGAMOTA;
--		sr_imem[SR_IMEM_RESTART / 4] = magic;
--		__asm__ volatile ("dsb sy" ::: "memory");
--		printf("SWEET REBOOT: IMEM restart_reason 0x146bf65c = 0x%08x\n", magic);
-+	if (sr_imem) {
-+		if (mode != SR_NORMAL) {
-+			uint32_t magic = mode == SR_BOOTLOADER ? SR_IMEM_BOOTLOADER :
-+			    mode == SR_RECOVERY ? SR_IMEM_RECOVERY : SR_IMEM_BERGAMOTA;
-+			sr_imem[SR_IMEM_RESTART / 4] = magic;
-+			__asm__ volatile ("dsb sy" ::: "memory");
-+			printf("SWEET REBOOT: IMEM restart_reason 0x146bf65c = 0x%08x\n", magic);
-+		} else {
-+			/* Clear cookies so bootloader/XBL does not enter Crashdump/EDL */
-+			sr_imem[0] = 0;
-+			sr_imem[SR_IMEM_RESTART / 4] = 0;
-+			__asm__ volatile ("dsb sy" ::: "memory");
-+		}
- 	}
-+	/*
-+	 * SDM845 / fajita: invoke PSCI SYSTEM_RESET first so TrustZone (EL3)
-+	 * coordinates a clean warm/cold reset with PMIC and watchdog.
-+	 * Pulling PS_HOLD low from EL1 directly trips Qualcomm Crashdump Mode.
-+	 */
-+	printf("SWEET REBOOT: requesting PSCI SYSTEM_RESET\n");
- 	__asm__ volatile ("dsb sy" ::: "memory");
-+	sr_psci_system_reset();
-+	delay(1000 * 1000);
-+	printf("SWEET REBOOT: PSCI did not reset, fallback to PS_HOLD\n");
- 	*sr_pshold = 0;
- 	__asm__ volatile ("dsb sy" ::: "memory");
- 	delay(2000 * 1000);
--	printf("SWEET REBOOT: PS_HOLD did not reset, PSCI SYSTEM_RESET\n");
--	sr_psci_system_reset();
--	delay(2000 * 1000);
- 	return -1;
- }
- #endif /* ARM64_BOARD_CONFIG_SWEET */
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
 index c6d113f..d5ffe88 100644
 --- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
