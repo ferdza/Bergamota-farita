@@ -222,7 +222,8 @@ class Session {
         else {
           this.patchNote = e.text;
           this.addLog("note", e.text);
-          if (e.text.startsWith("chlorophyll:")) this.patchGpu = { ok: /libraries in/.test(e.text), text: e.text };
+          // the build prefixes tweak lines ("tweaks: chlorophyll: ..."), so match inside the line
+          if (/(^|\s)chlorophyll: /.test(e.text)) this.patchGpu = { ok: /libraries in/.test(e.text), text: e.text.replace(/^tweaks: /, "") };
         }
       };
       const info = await p.open(ipsw);
