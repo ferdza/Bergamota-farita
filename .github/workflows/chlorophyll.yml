@@ -11,8 +11,11 @@ on:
         description: Publish the zip as the chlorophyll-ios18 release of this repository (the web installer adds it to the root by default)
         default: "true"
       chlorophyll_ref:
-        description: Chlorophyll branch, tag or commit
-        default: ios26
+        description: Chlorophyll branch, tag or commit (our gpu/chlorophyll-patches apply to d3cb665 = the gpu/metal pin)
+        default: d3cb665
+      patches:
+        description: Apply this repository's gpu/chlorophyll-patches (texture memory pool, perf2 counters, hot-path fixes) on top; "false" builds upstream as is
+        default: "true"
       xcode_version:
         description: Xcode on the runner (empty = the newest; Chlorophyll's Metal device needs the iOS 26 SDK, binaries still target iOS 18.0)
         default: ""
@@ -35,6 +38,19 @@ jobs:
           git -C "$WORK/chlorophyll" checkout -q "${{ inputs.chlorophyll_ref }}"
           git -C "$WORK/chlorophyll" log --oneline -1
           git clone -q --depth 1 --branch libdrm-2.4.124 https://gitlab.freedesktop.org/mesa/drm.git "$WORK/libdrm-src"
+
+      # Our patches (gpu/chlorophyll-patches, README there): written against the pin d3cb665 and checked to apply with git am; the
+      # Objective-C/Vulkan code in them is compiled for the first time by this build. If it breaks the build, fix the patch or
+      # re-run with patches=false to get the upstream userland.
+      - name: Apply our Chlorophyll patches
+        if: ${{ inputs.patches == 'true' }}
+        run: |
+          cd "$WORK/chlorophyll"
+          git config user.name "bergamota-ci"
+          git config user.email "ci@localhost"
+          ls "$GITHUB_WORKSPACE"/gpu/chlorophyll-patches/0*.patch
+          git am --3way "$GITHUB_WORKSPACE"/gpu/chlorophyll-patches/0*.patch
+          git log --oneline -8
 
       - name: Xcode
         run: |
@@ -84,7 +100,7 @@ jobs:
           cp "$WORK/libdrm-src/COPYING" "$P/LICENSES/libdrm-COPYING" 2>/dev/null || true
           for f in NOTICE.md LICENSE.hackios-userland; do cp "$WORK/chlorophyll/$f" "$P/LICENSES/Chlorophyll-$f" 2>/dev/null || true; done
           {
-            echo "Chlorophyll $(git -C "$WORK/chlorophyll" rev-parse --short HEAD) (${{ inputs.chlorophyll_ref }}), Bergamota-farita $(git rev-parse --short HEAD)"
+            echo "Chlorophyll $(git -C "$WORK/chlorophyll" rev-parse --short HEAD) (${{ inputs.chlorophyll_ref }}, patches=${{ inputs.patches }}), Bergamota-farita $(git rev-parse --short HEAD)"
             echo "Xcode: $(xcodebuild -version | head -1), iPhoneOS SDK $(xcrun --sdk iphoneos --show-sdk-version)"
             echo "Built by GitHub Actions run ${{ github.run_id }}"
             echo
