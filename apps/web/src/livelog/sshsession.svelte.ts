@@ -681,25 +681,37 @@ class SshSession {
         "echo '=== SECTION: SYSTÈME & UPTIME ==='",
         "echo \"Date: $(date 2>/dev/null)\"",
         "echo \"Uptime: $(uptime 2>/dev/null)\"",
+        "echo \"launchd age (ps etime): $(ps -o etime= -p 1 2>/dev/null)\"",
         "uname -a 2>/dev/null || true",
         "sw_vers 2>/dev/null || true",
+        "echo '== Montages / espace disque:'",
+        "mount 2>/dev/null | head -n 12; df -h / /private/var 2>/dev/null",
+        "echo '== Firmware GPU présent (le noyau lit ces dossiers):'",
+        "ls -l /usr/local/share/firmware /usr/standalone/firmware/sweet 2>&1 | head -n 20",
+        "echo '== Nettoyage CPU par défaut (docs/CPU_IDLE.md):'",
+        "cat /var/root/IDLE-CPU.txt 2>/dev/null | head -n 8 || echo '(absent)'",
         "echo ''",
         "echo '=== SECTION: TOP PROCESSUS CPU & MÉMOIRE ==='",
         "ps aux 2>/dev/null | head -n 45 || ps -ef 2>/dev/null | head -n 45",
         "echo ''",
         "echo '=== SECTION: SYSCTL SWEET NOYAU ==='",
-        "sysctl kern.sweet_cpufreq 2>/dev/null || true",
-        "sysctl kern.sweet_fb 2>/dev/null || true",
-        "sysctl kern.sweet_display_off 2>/dev/null || true",
-        "sysctl kern.sweet_charger 2>/dev/null || true",
-        "sysctl kern.sweet_reboot_mode 2>/dev/null || true",
+        "if command -v sysctl >/dev/null 2>&1; then",
+        "  for k in kern.sweet_cpufreq kern.sweet_amp kern.sweet_amp_mode kern.sweet_amp_migrate kern.sweet_amp_kick kern.sweet_amp_reserve kern.sweet_gpu kern.sweet_fb kern.sweet_display_off kern.sweet_charger kern.sweet_reboot_mode kern.sweet_cpufreq_boost; do echo \"-- $k\"; sysctl -n $k 2>&1 | head -n 40; done",
+        "  echo '-- tous les kern.sweet* (sysctl -a):'; sysctl -a 2>/dev/null | grep -i sweet | cut -c1-200 | head -n 80",
+        "else echo '(pas de binaire sysctl sur ce root)'; fi",
+        "echo '-- sweetmetrics (lit les sysctl sweet):'",
+        "if [ -x /usr/local/bin/sweetmetrics ]; then /usr/local/bin/sweetmetrics 2>&1 | head -n 80; else echo '(sweetmetrics absent: installer les outils)'; fi",
         "echo ''",
         "echo '=== SECTION: CHLOROPHYLL & GPU ADRENO 630 ==='",
         "ls -la /usr/local/lib/bgmtl/ /private/var/tmp/bgmtl* 2>/dev/null || true",
         "ls -l /usr/libexec/backboardd /usr/libexec/backboardd.orig 2>/dev/null || true",
         "for f in /private/var/tmp/bgmtl-bb.state /private/var/tmp/bgmtl-bb.off; do [ -e $f ] && { echo \"== $f\"; cat $f; }; done",
         "echo '== Dernières lignes bgmtl.log:'",
-        "tail -n 40 /private/var/tmp/bgmtl.log 2>/dev/null || echo '(aucun log bgmtl)'",
+        "tail -n 60 /private/var/tmp/bgmtl.log 2>/dev/null || echo '(aucun log bgmtl)'",
+        "echo '== Lignes de performance (fps, encodage, pool de textures):'",
+        "grep -E 'perf2?:|frames:|texpool|mempool' /private/var/tmp/bgmtl.log 2>/dev/null | tail -n 40 || true",
+        "echo '== Tests GPU présents:'",
+        "ls -l /var/root/turnip-test/tu_smoke /var/root/chl-test/chl_test 2>&1 | head -n 4",
         "echo ''",
         "echo '=== SECTION: DÉMONS GIVRÉS & CRASH LOOPS ==='",
         "echo '== Fichiers dans disabled-bin:'",
@@ -709,6 +721,16 @@ class SshSession {
         "echo ''",
         "echo '=== SECTION: RAPPORTS DE CRASH RÉCENTS ==='",
         "ls -lt /Library/Logs/CrashReporter /var/mobile/Library/Logs/CrashReporter 2>/dev/null | head -n 25 || true",
+        "echo '== Compte des crashs par processus:'",
+        "ls /var/mobile/Library/Logs/CrashReporter 2>/dev/null | sed 's/-[0-9][0-9-]*\\..*//' | sort | uniq -c | sort -rn | head -n 12",
+        "echo '== Début du crash le plus récent:'",
+        "f=$(ls -t /var/mobile/Library/Logs/CrashReporter/*.ips 2>/dev/null | head -n 1); [ -n \"$f\" ] && { echo \"$f\"; head -c 1800 \"$f\"; echo; } || echo '(aucun)'",
+        "echo ''",
+        "echo '=== SECTION: PROCESSUS LES PLUS GOURMANDS (TOP 12, tri CPU) ==='",
+        "ps aux 2>/dev/null | sort -k3 -rn | head -n 12 | cut -c1-170",
+        "echo ''",
+        "echo '=== SECTION: SERVICES LAUNCHD (compte, désactivés) ==='",
+        "launchctl list 2>/dev/null | wc -l; ls /private/var/db/com.apple.xpc.launchd/ 2>/dev/null; cat /private/var/db/com.apple.xpc.launchd/disabled.plist 2>/dev/null | head -n 40",
       ].join("\n");
 
       const res = await this.run(diagScript);
@@ -725,6 +747,28 @@ class SshSession {
         "=== SECTION: EXTRAIT CONSOLE DE BOOT & NOYAU ===",
         "================================================================================",
       ];
+
+      // The page's own live kernel log (UDP 5140 over USB, REPLAY since boot): the part no SSH command can give, and the part that
+      // survives a reset up to the last second. Key lines first (boot, SWEET subsystems, crashes, reboot), then the tail.
+      const ring = log.lines;
+      if (ring.length > 0) {
+        const keyRe = /SWEET (REBOOT|GPU|AMP|CPUFREQ: (gov|governor|domain)|TS|FB: stats|CHARGER|HFS|UFS|SMMU)|CRASH |panic|Panic|PANIC|launchd got|System shutdown|Qualcomm|dload|sdi st/;
+        const key = ring.filter((l) => keyRe.test(l.text) && !/LUT\[/.test(l.text)).map((l) => l.text);
+        report.push("");
+        report.push("================================================================================");
+        report.push(`=== SECTION: LOG NOYAU TEMPS RÉEL DE LA PAGE (${ring.length} lignes en mémoire) ===`);
+        report.push("================================================================================");
+        report.push(`--- Lignes clés (${Math.min(key.length, 1500)} sur ${key.length}) ---`);
+        report.push(key.slice(-1500).join("\n"));
+        report.push("");
+        report.push("--- Les 600 dernières lignes ---");
+        report.push(ring.slice(-600).map((l) => l.text).join("\n"));
+      } else {
+        report.push("");
+        report.push("(log temps réel de la page vide: ouvrir la page /log/, \"Connect the phone\", puis \"Log since boot\" avant d'exporter)");
+      }
+      report.push("");
+      report.push(`--- Navigateur: ${typeof navigator !== "undefined" ? navigator.userAgent : "?"} ---`);
 
       if (this.klog && this.klog.length > 0) {
         report.push(`--- Log mémoire web (${this.klogHead || "console"}) ---`);
