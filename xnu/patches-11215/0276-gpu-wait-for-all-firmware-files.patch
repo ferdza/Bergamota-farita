@@ -1,0 +1,41 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 91a4676..442052b 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -4026,12 +4026,34 @@ a630_thread(void *arg, wait_result_t wr)
+ 	void *fw = NULL;
+ 	size_t size = 0;
+ 	for (int t = 0;; t += 2) {
+-		if (sweet_a630_fw_get("gmu-firmware", "a630_gmu.bin", &fw, &size)) {
++		/*
++		 * 0276: wait for the three files the bring-up reads, not only the first. When the firmware is copied into the
++		 * running root one file at a time (a630_gmu.bin lands first, the zap a630_zap.mdt + .bNN last), the old loop
++		 * started stage 8 as soon as the GMU image appeared, the zap was still missing, "zap load failed" shut the GPU down
++		 * and backboardd stayed on the CPU renderer for the whole boot (diag 2026-11-12 22:01).
++		 */
++		void *f2 = NULL, *f3 = NULL;
++		size_t s2 = 0, s3 = 0;
++		bool have = sweet_a630_fw_get("gmu-firmware", "a630_gmu.bin", &fw, &size);
++		bool have2 = have && sweet_a630_fw_get("sqe-firmware", "a630_sqe.fw", &f2, &s2);
++		bool have3 = have2 && sweet_a630_fw_get("zap-mdt", "a630_zap.mdt", &f3, &s3);
++		if (have2) {
++			sweet_a630_fw_put(f2, s2);
++		}
++		if (have3) {
++			sweet_a630_fw_put(f3, s3);
++		}
++		if (have && have2 && have3) {
+ 			sweet_a630_fw_put(fw, size);
++			sleep_ms(4000);         /* the zap segments (.b00..) are written right after the .mdt */
+ 			break;
+ 		}
++		if (have) {
++			sweet_a630_fw_put(fw, size);
++		}
+ 		if (t == 0 || t % 60 == 0) {
+-			printf("SWEET GPU: waiting for a630_gmu.bin (ADT /sweet-gpu or %s), %d s\n", FW_DIR, t);
++			printf("SWEET GPU: waiting for a630_gmu.bin, a630_sqe.fw, a630_zap.mdt (ADT /sweet-gpu or %s), %d s (gmu %d sqe %d zap %d)\n",
++			    FW_DIR, t, have, have2, have3);
+ 		}
+ 		if (t >= wait) {
+ 			printf("SWEET GPU: no GPU firmware after %d s; giving up (see docs/GPU_A630_BRINGUP.md)\n", t);
