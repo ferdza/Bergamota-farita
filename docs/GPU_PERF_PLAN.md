@@ -2,6 +2,15 @@
 
 Status: research and plan, 2026-11-12. Nothing here was built or run on a phone.
 
+> **Reconciliation with this repository (lead, 2026-11-12).** This plan was written in a worktree that predates our local docs and
+> notes, from public upstream pages only. Our NOTES.md (search "FPS work", "Performance work", "Texture pool") shows some items
+> already exist: `setBytes`/`setVertexBytes`/`setFragmentBytes` as 256-B slices of 64 KB slabs (`bgmtl.nobytesring`), a graphics
+> state shadow in `rwa_render_draw`, dispatches without a per-dispatch wait (+ `memory_barrier`), and a backboardd texture pool
+> (`BGMTL_TEXPOOL_MB=192`, hit rate only 30-45 %). So of the top recommendations, the slab allocator is partly DONE (check what
+> is still per-draw: `BGWork` objects, per-draw GEM buffers), the texture pool exists but still needs **size bucketing**, and
+> **deferred encoding on its own thread** (hakios `metal_defer`) is the remaining big item. Also: the a630 has no preemption.
+> Our measured baselines (NOTES): encode 18-30 ms per frame of 160-270 draws, 100-200 us/draw in production vs 3.4-7.5 us in tests.
+
 ## Basis and limits
 
 - Chlorophyll is an empty submodule here. The clone of
