@@ -95,3 +95,94 @@ No P0 (data loss of data the user has not already agreed to lose, brick, or remo
 **F-26 P3. `apps/web/public/_headers`.** OBSERVED. A solid CSP (`default-src 'self'`, `connect-src 'self'`, no inline scripts). Note that it only applies on the Cloudflare host: GitHub Pages ignores `_headers`, so the production URL in INSTALL.md (`ferdza.github.io`) has no CSP, no COOP and no `Permissions-Policy`, and no `/api/fcs-key` relay (the user must fetch Apple's key by hand; `waitForKeys`). Fix: add a `<meta http-equiv="Content-Security-Policy">` in `index.html` (works on Pages) and document which host is canonical.
 
 ---
+
+## 3. What others do better
+
+Sources: local clones under the scratchpad `refs/` (read only, nothing run): `oosexgang_hackios-xnu-kernel` (`docs/install.md`, `tools/backup-partitions.py`, `tools/flash-fingerprint.sh`, `tools/doctor.sh`, `sysimage/ipsw-member.py`, `tools/jb-preinstall.py`) and `UniXNU_UniXNU` (`docs/guide/userdata.md`, `docs/porting/dual-system-partition.md`, `docs/porting/arm64e.md`). Web research was not done this session (rate-limit interruption): everything below is from those clones. The claims about those projects are OBSERVED in their docs/scripts, not tested.
+
+| Area | Bergamota-farita today | What others do | Idea to take |
+|---|---|---|---|
+| Root build speed and size | Re-writes the whole OS into a fresh HFSX (about 15 GiB used, 24 GiB volume), PAC-strips about 3,200 Mach-Os, rewrites the dyld cache; about an hour over HTTP (README), no resume | UniXNU (`guide/userdata.md`): the IPSW's OS and SystemOS disk images are placed unchanged in windows behind a manifest the kernel reads; no per-file rewrite, so the build is a copy with a dry-run report (window offsets, sizes, hashes, capacity). HackiOS `ipsw-member.py`: streams one member from the IPSW, never holds it in memory | Keep Renegade (needed: arm64e to arm64), but add a `--dry-run` report with sizes, hashes and the partition capacity check; cache stage outputs (dyld cache, Mach-O plan) keyed by IPSW build + Renegade version so re-patching only redoes tweaks |
+| First boot | Launchd job runs `renegade-firstboot.sh` (app registration, wallpaper, up to 3 tries, retry loops of 10 minutes) | UniXNU `guide/skip-setup.md`, `mobilegestalt.md`: setup skipping and device identity as documented, separate steps. HackiOS `jb-preinstall.py`: packages unpacked into the root at build time so the first boot has nothing to download | Move app registration into the image (pre-built LaunchServices cache) where possible; log the first-boot result to a file the web page can read back over SSH |
+| SSH | Dropbear, key-only, host keys generated on the phone at first connection (`-R`), the browser accepts any host key (F-11) | HackiOS: no network daemons by default, every action logged | Generate host keys at build time and show the fingerprint in the patch log; TOFU pin in the page |
+| App install | Page re-signs an IPA in WASM and untars as root over SSH; replaces by name with no staging (F-04) | HackiOS `jb-preinstall.py`: nothing of a package's own scripts is run, only plain files plus the dpkg database, newest version first | Staging dir + atomic move; stock-app deny list; show entitlements before install |
+| Updates | None: a new release means re-patching the IPSW and re-flashing the whole `userdata` | HackiOS: installs into the inactive slot only; system image read-only | A "tools update" over SSH (the page already has "Install a .zip"): version-stamp `/usr/local/share/renegade/version` and let the page diff it against the site's bundle |
+| Recovery | The page flashes `userdata`/`boot`/`logo`; Android is erased; recovery is "boot with sweetdenypath" or re-flash. No backup taken or verified | HackiOS `docs/install.md` seven rules: look first and keep what was there (partitions to be touched, GPT head/tail, `boot`, `vbmeta` copied and hashed twice), only the inactive slot, never the partitions that cannot be remade, every write read back, a way back that does not need the host, dry run by default, everything logged. `backup-partitions.py` hashes each partition before and after the copy. `flash-fingerprint.sh` proves nothing else changed. UniXNU `dual-system-partition.md`: carve a new `unixnu` partition off the end of `userdata` (F2FS shrink from TWRP), so Android survives | (1) a backup step/script modelled on `backup-partitions.py`; (2) record `fastboot getvar all` and the GPT in the install log; (3) offer the carve option so Android is not forced to go (AGENTS.md approves erasing for the owner; other users should get the safer default); (4) read-back verification (F-08) |
+| Pre-flight checks | None beyond `product` | HackiOS `tools/doctor.sh`: read-only host and phone check that says what to do about each problem | A "Check my setup" panel: browser, WebUSB, OPFS quota, free disk, bootloader unlocked, slot, battery level |
+
+---
+
+## 4. i18n, accessibility, UX consistency (apps/web)
+
+- OBSERVED: the page declares `lang="en"` and all of `flash/*` is English, but `livelog/LiveLog.svelte` mixes French (`Vérifier`, `Vérifier l'état actuel du téléphone`, `Installer l'IPA`, lines about 160 and 286-308) with English labels such as `aria-label="IPA to install"` on the same row. There is no dictionary: strings are literals in the `.svelte` and `.ts` files, so a language cannot be switched and mixed text slips in. Fix: `src/lib/i18n.ts` with `en` first, extract the strings of `LiveLog.svelte`, `session.svelte.ts` and `flasher.ts`. (F-23)
+- OBSERVED: an emoji leads the refresh pill; screen readers read "circular arrows". Give icon buttons an `aria-label`.
+- INFERRED: progress and errors are not in live regions; a flash can take 10+ minutes and a screen-reader user gets no updates. Add `role="status"` to the progress text and `role="alert"` to `flashError`/`connectError`/`patchError`.
+- OBSERVED: the typed-confirmation input is labelled (good); the destructive button is `disabled` until the text matches, with no explanation for assistive tech (`aria-describedby`).
+- OBSERVED: `beforeunload` blocks the tab only while flashing, not while patching (about an hour): closing the tab mid-patch silently loses the work (F-15).
+
+---
+
+## 5. docs/INSTALL.md end to end: gaps and risky steps
+
+Walk-through as a new user with a OnePlus 6T:
+
+| # | Step in the doc | Gap or risk | Tag |
+|---|---|---|---|
+| 5.1 | Before step 1 | No prerequisites: unlocked bootloader (the page says "Unlock it first (Xiaomi's unlock tool)", which is wrong for a OnePlus), a full Android backup, charge level, the exact phone model and slot state | OBSERVED (flasher.ts `phoneProblems`) |
+| 5.2 | "Drop `iPhone11,8_18.7.8_22H352_Restore.ipsw`" | Does not say where to get the IPSW, its size (about 6 GB), or that 17 GiB of browser storage are needed; Chrome's quota depends on the disk holding the profile (F-15). A wrong IPSW errors only after opening | OBSERVED |
+| 5.3 | "paste your SSH public key" | If skipped, the root has no way in at all and the doc does not say so. A key with a passphrase is refused with a long recipe by the live-log page | OBSERVED |
+| 5.4 | "patch, then flash `userdata`" | The patch takes about an hour; on GitHub Pages there is no `/api/fcs-key` relay so the user must fetch Apple's key by hand (`waitForKeys`), which INSTALL.md never mentions | OBSERVED |
+| 5.5 | Order of steps | Step 1 flashes userdata, step 2 builds the boot image with `dtb/<board>/dtb` and GPU firmware pulled from the user's own Android partitions (`tools/gpu-fw-pull.sh`), plus a green *xnu* CI run. A user who follows the numbers has erased Android before finding out step 2 needs Android's partitions. Reorder: backup, pull dtb/firmware, build boot image, flash userdata last | OBSERVED |
+| 5.6 | "Boot once" | Nothing is written to `boot`, so every power cycle returns to the stock boot. The doc never says how iOS is booted later (a persistent install needs `flash:boot`, allowed by the page but not described) | INFERRED |
+| 5.7 | Safety net | "Never hard-reset iOS": the root is an unjournaled HFS+, but INSTALL.md gives no way to power off a hung phone or to repair after a dirty shutdown (only FAJITA.md known issues mention the cause) | OBSERVED |
+| 5.8 | Recovery to Android | Absent: no documented route back, and the page cannot restore it | OBSERVED |
+| 5.9 | Boot image secrets | "The OEM zap firmware is inside the ADT: never publish the image": correct, but `build-boot.sh` does not itself write to a git-ignored path (`.gitignore` covers `enxerto/out/` only) | INFERRED |
+| 5.10 | Chlorophyll line | The doc tells the user to run two workflows if the `chlorophyll:` line is missing; an end user cannot run the maintainers' workflows. Make it a maintainer note and have the site refuse to publish without the release (F-06) | OBSERVED |
+| 5.11 | Canonical URL | INSTALL.md points to `ferdza.github.io/Bergamota-farita/flash/` (no CSP, no key relay, F-26) while `wrangler.jsonc` defines `bergamota.zesmoi.com.br`: two hosts with different headers and behaviour, no statement of which is canonical | OBSERVED |
+
+---
+
+## 6. Hardening list (concrete, ordered)
+
+1. Second phone identity check and slot-aware `boot` flash (F-01, F-02). S.
+2. Refuse headerless/non-HFS images for `userdata`; write patch output as `.partial` and rename on success (F-03, F-15). S.
+3. Staging + deny-list for IPA install and "Remove an app" (F-04). S-M.
+4. Lock the tools supply chain: tag + SHA pin file, commit-pinned Chlorophyll, signed bundle, build berga-tools in-tree (F-05, F-06). M.
+5. CI on pull requests: `cargo test` as non-root, clippy `-D warnings`, `npm run check`, `npm test`, wasm build, `npm audit --omit=dev` (F-12). S.
+6. Pin actions by SHA, split `contents: write` into the publish job, pass inputs through `env` (F-13). S.
+7. Fix the 5 failing tests (section 1) and add `record_all_owners` (F-17). S.
+8. Host key at build time or TOFU pin in the page (F-11). S-M.
+9. Timeouts that reset the USB device (F-07); post-flash verification (F-08). M.
+10. Zip/IPA resource caps (F-10); `Tools::from_zip` real JSON and missing-file errors (F-16). S-M.
+11. Whole-partition volume option (F-09). S.
+12. Backup step modelled on HackiOS `backup-partitions.py` and a "check my setup" panel (section 3). M.
+13. i18n dictionary and live regions (section 4). S-M.
+14. CSP meta tag for the Pages host (F-26); `redirect: "manual"` in the relay (F-25). S.
+15. Reorder INSTALL.md; add prerequisites, recovery and canonical-URL sections (section 5). S.
+
+---
+
+## 7. Code quality, clippy, duplication, parity
+
+- OBSERVED (F-27, P3): `cargo clippy --all-targets` in tools/renegade-rs: 28 library warnings, all style: 18 `needless_borrow` (src/apfs/mod.rs 346-384 and 505, src/apfs/file.rs 200 and 252, src/apfs/fs.rs 369-370, src/apfs/obj.rs 59, src/apfs/lzbitmap.rs 39, src/rootbuild.rs 46 and 48), 4 `type_complexity`, 3 `collapsible_if`, 2 `manual_saturating_arithmetic`, 2 `manual_is_multiple_of`, and 1 in `bin/renegade-rs.rs:1082`. None points at a bug; `cargo clippy --fix` clears most. Gate it in CI (F-12).
+- OBSERVED (F-28, P3, S): about 72 `unwrap()`/`expect()` outside tests in the library (aea.rs, codesign.rs:364, dsc.rs:207, hfs.rs, hfswrite.rs 275-318, tools.rs 417/512/554, tweaks.rs 490-495). Most follow a check; in wasm a panic becomes `unreachable` and the UI only shows the previous log line (session.svelte.ts). Install a panic hook in `renegade-wasm` that sends the message and location through `host.event`.
+- OBSERVED (F-29, P3, S): `tools.rs: install()` records the owner for `dst.new` instead of `dst` (copied from the Python temp-file behaviour); the `OWNER ...new` entries are dead weight in the owner map (14 of them in the diff of section 1). Record for `dst` in both implementations.
+- OBSERVED (F-30, P3): dead `let _ = DROPBEAR_KEY;` and a log line "no dropbearkey for the host (Linux: apt install dropbear-bin)" printed in the browser path, where host keys are not generated by design.
+- OBSERVED (F-31, P2, M): duplication and parity. `tools/renegade/root_tweaks18.py` (1,512 lines) and `renegade-rs/src/tweaks.rs` + `tools.rs` (1,854 lines) implement the same tweaks; `tools/img2simg.py` and `tools/renegade/img2simg.py` are two different copies (64 and 88 lines); `tools/sweet-root-tweaks.py` (386 lines) is a third tweak implementation. The two paths already diverge (chlorophyll, host-key handling, `real` owners, the README "Not ported yet" list). Declare Rust canonical and freeze Python as a test oracle, delete the other copies, or move shared data (job names, plist keys, file lists) into one data file that both read.
+- OBSERVED (F-32, P3): the jailbreak stage (Python only) downloads Procursus, Sileo and TrollStore at build time (`jailbreak.py` lines 55-71); its docstring says only the Linux `ldid` is SHA-256 pinned. UNVERIFIED whether the payload hashes are pinned. The browser path does not use it. Pin every URL by hash.
+- OBSERVED (F-33, P3): no `cargo audit`/`cargo deny` in CI; `ureq = "2"` (CLI only) is the only network dependency.
+
+---
+
+## 8. Summary table
+
+| Severity | Findings |
+|---|---|
+| P0 | none |
+| P1 | F-01, F-02, F-03, F-04, F-05, F-06 |
+| P2 | F-07 to F-17, F-31 |
+| P3 | F-18 to F-30, F-32, F-33 |
+
+Total: 33 findings, plus the 11 install-protocol rows of section 5 and the 7 comparison rows of section 3.
+
+Not done in this session (rate-limit interruption): web research (hackiosx.dev, unixnu.com, blacktop/ipsw), deep reading of `dsc.rs` (cache rewrite, FIPS HMAC) and `hfswrite.rs` invariants, `ipstack.ts` and `ssh.ts` protocol correctness (only the host-key and key-handling paths were read), WASM memory measurements, and the Python `mkroot-full.py` flow. Treat the absence of findings there as UNVERIFIED, not as clean.
