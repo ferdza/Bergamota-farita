@@ -8,7 +8,7 @@ name: web (GitHub Pages)
 
 on:
   push:
-    branches: [fajita]
+    branches: [fajita, main]
     paths:
       - "apps/web/**"
       - "tools/renegade-wasm/**"
