@@ -265,7 +265,7 @@ fn root_build_with_tweaks_matches_root_tweaks18() {
     }
     run(Command::new("python3").arg("-I").arg(&script).arg("run").arg(&py_root).arg(&tools));
     let simg = d.join("root.simg");
-    run(Command::new(bin()).arg("root").arg(&src).arg(&simg).args(["--build", "22H352", "--version", "18.7.8", "--board", "N841", "--adt-target", "D22"])
+    run(Command::new(bin()).arg("root").arg(&src).arg(&simg).args(["--build", "22H352", "--version", "18.7.8", "--board", "N841", "--adt-target", "D22", "--no-idle"])
         .arg("--netcfg").arg(tools.join("sweetnetcfg")).arg("--sweetreboot").arg(tools.join("sweetreboot")));
     let cat = |p: &str| Command::new("python3").arg("-I").arg(root().join("../renegade/hfsx.py")).arg(&simg).args(["cat", p]).output().unwrap().stdout;
     for p in [

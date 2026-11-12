@@ -616,6 +616,96 @@ def quiet(root):
     print(f'quiet: removed {len(gone)} job(s) {QUIET_REMOVE}, ThrottleInterval set on {n}')
 
 
+# idle(): the respawn / crash loops that burn CPU on an idle phone (NOTES.md "CPU thieves" 2026-10-26, docs/CPU_IDLE.md).
+# On by default (SWEET_IDLE=0 skips it); mirrors tweaks.rs idle(). Reversible: see IDLE_NOTE_TEXT.
+DISABLED_PLIST = 'private/var/db/com.apple.xpc.launchd/disabled.plist'     # launchctl disable's file: {label: True}
+IDLE_DISABLE = ('com.apple.gamepolicyd', 'com.apple.wifip2pd', 'com.apple.fairplayd.H2', 'com.apple.asd',
+                'com.apple.SepUpdateTimer', 'com.apple.coreduetd')   # coreduetd: ios-sweet NOTES 2026-11-09 (~0.9 core locked)
+IDLE_THROTTLE = {'com.apple.usernotificationsd': 60, 'com.apple.watchdogd': 60}      # on top of QUIET_THROTTLE
+IDLE_PARK = ('SiriAUSP', 'MauiAUSP', 'MacinTalkAUSP', 'KonaSynthesizer', 'MessagesBlastDoorService')
+IDLE_PARK_ROOTS = ('System/Library', 'usr/libexec', 'Applications')
+PARK_DIR = 'private/var/root/disabled-bin'                  # the web page's "Quiet crash loops" folder and README
+IDLE_NOTE = 'private/var/root/IDLE-CPU.txt'
+IDLE_NOTE_TEXT = (
+    "Idle-CPU tweaks of this root (renegade idle(); see docs/CPU_IDLE.md).\n"
+    "Undo:\n"
+    "- jobs off: remove the keys from /private/var/db/com.apple.xpc.launchd/disabled.plist, or launchctl enable system/LABEL.\n"
+    "- parked executables: the web page's Restore, or mv each 'DEST ORIG' line of /var/root/disabled-bin/README back.\n"
+    "- ThrottleInterval 60 s on replicatord, appprotectiond, passd, findmydeviced, mobileactivationd, spaceattributiond, PerfPowerServices, webinspectord, usernotificationsd, watchdogd: edit launchd.plist, or rebuild the root with --no-idle.\n")
+
+
+def idle(root, keep_bluetooth=None):
+    """keep_bluetooth: the BlueTool stub is built, so bluetoothd is being brought up, not looping on nothing."""
+    if keep_bluetooth is None:
+        stub = BLUETOOL_STUB or find_sweetnet('bluetool-stub')
+        keep_bluetooth = bool(stub and os.path.exists(stub))
+    # 1. disabled.plist (merged, other keys kept)
+    want = list(IDLE_DISABLE) + ([] if keep_bluetooth else [BT_LABEL])
+    dp = os.path.join(root, DISABLED_PLIST)
+    if os.path.exists(dp):
+        st = os.stat(dp)
+        dis, uid, gid, mode = load(dp), st.st_uid, st.st_gid, st.st_mode & 0o7777
+    else:
+        dis, uid, gid, mode = {}, 0, 0, 0o644
+    off = [l for l in want if dis.get(l) is not True]
+    for l in off:
+        dis[l] = True
+    if off:
+        os.makedirs(os.path.dirname(dp), exist_ok=True)
+        save(dp, dis, uid, gid, mode)
+    # 2. ThrottleInterval raised (never lowered)
+    thr = 0
+    path = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    if os.path.exists(path):
+        st = os.stat(path)
+        plist = load(path)
+        table = dict(QUIET_THROTTLE)
+        table.update(IDLE_THROTTLE)
+        for j in plist.get('LaunchDaemons', {}).values():
+            t = table.get(j.get('Label'))
+            if t is not None and j.get('ThrottleInterval', 0) < t:
+                j['ThrottleInterval'] = t
+                thr += 1
+        if thr:
+            save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    # 3. park the crash-looping extension executables (README line: DEST ORIG, device paths)
+    parked, readme = [], ''
+    for base in IDLE_PARK_ROOTS:
+        top = os.path.join(root, base)
+        if not os.path.isdir(top):
+            continue
+        found = []
+        for d, _dirs, files in os.walk(top):
+            for n in files:
+                p = os.path.join(d, n)
+                if n in IDLE_PARK and not os.path.islink(p):
+                    found.append(p)
+        for p in sorted(found):
+            orig = '/' + os.path.relpath(p, root)
+            name = orig.replace('/', '_')
+            dst = os.path.join(root, PARK_DIR, name)
+            if os.path.exists(dst):
+                continue
+            os.makedirs(os.path.join(root, PARK_DIR), exist_ok=True)
+            os.rename(p, dst)
+            readme += '/var/root/disabled-bin/%s %s\n' % (name, orig)
+            parked.append(orig)
+    if readme:
+        rp = os.path.join(root, PARK_DIR, 'README')
+        with open(rp, 'ab') as f:
+            f.write(readme.encode())
+        os.chmod(rp, 0o644)
+        os.chown(rp, 0, 0)
+    print(f'idle: disabled.plist +{len(off)} {off}, ThrottleInterval raised on {thr}, parked {len(parked)} {parked}')
+    if off or thr or parked:
+        note = os.path.join(root, IDLE_NOTE)
+        os.makedirs(os.path.dirname(note), exist_ok=True)
+        with open(note, 'w') as f:
+            f.write(IDLE_NOTE_TEXT)
+        os.chmod(note, 0o644)
+        os.chown(note, 0, 0)
+
+
 REGISTER_LIST = 'usr/local/share/renegade/register-apps'
 
 
@@ -1329,11 +1419,13 @@ def base(root):
     """Everything of the original tweaks stage that is idempotent and not an auto-fix, in build order: what `renegade
     update` runs before auto(), so an image built before a tweak existed (event_timing was only in main()) gets it.
     Skipped on purpose: patch_mount_phase2 (opt-in), the console bring-up job (informational), the quiet() set
-    (opt-in: SWEET_QUIET=1 is honoured here too)."""
+    (opt-in: SWEET_QUIET=1 is honoured here too); idle() runs unless SWEET_IDLE=0."""
     configure_paths()
     launchd(root)
     if os.environ.get('SWEET_QUIET') == '1':
         quiet(root)
+    if os.environ.get('SWEET_IDLE') != '0':
+        idle(root)
     containers(root)
     launchservices(root)
     event_timing(root)
@@ -1383,6 +1475,8 @@ def main():
     launchd(root)
     if os.environ.get('SWEET_QUIET') == '1':
         quiet(root)
+    if os.environ.get('SWEET_IDLE') != '0':
+        idle(root)
     containers(root)
     launchservices(root)
     event_timing(root)

@@ -216,6 +216,7 @@ fn cmd_root(args: &[String]) -> Res<ExitCode> {
             board: opts.get("--board").cloned().unwrap_or("N104".into()),
             adt_target: opts.get("--adt-target").cloned().unwrap_or("N104".into()),
             quiet: flags.iter().any(|f| f == "--quiet"),
+            idle: !flags.iter().any(|f| f == "--no-idle"),
             netcfg: read("--netcfg")?,
             sweetreboot: read("--sweetreboot")?,
             root_display: String::new(),
@@ -301,7 +302,7 @@ fn cmd_plist(args: &[String]) -> Res<ExitCode> {
 /// then the recorded owners ("OWNER path uid gid").
 fn cmd_tweaks(args: &[String]) -> Res<ExitCode> {
     let (pos, opts, flags) = split(args, &["--build", "--version", "--board", "--adt-target", "--netcfg", "--sweetreboot", "--display", "--tools-dir", "--ssh-key", "--ssh-key-name"]);
-    let [root] = &pos[..] else { return Err("tweaks ROOT_DIR --build B --version V [--board N841 --adt-target D22] [--quiet] [--netcfg FILE] [--sweetreboot FILE] [--display PATH]".into()) };
+    let [root] = &pos[..] else { return Err("tweaks ROOT_DIR --build B --version V [--board N841 --adt-target D22] [--quiet] [--idle] [--netcfg FILE] [--sweetreboot FILE] [--display PATH]".into()) };
     let read = |k: &str| opts.get(k).map(fs::read).transpose();
     let cfg = renegade::tweaks::Config {
         build: opts.get("--build").cloned().ok_or("--build is required")?,
@@ -309,6 +310,7 @@ fn cmd_tweaks(args: &[String]) -> Res<ExitCode> {
         board: opts.get("--board").cloned().unwrap_or("N104".into()),
         adt_target: opts.get("--adt-target").cloned().unwrap_or("N104".into()),
         quiet: flags.iter().any(|f| f == "--quiet"),
+        idle: flags.iter().any(|f| f == "--idle"),
         netcfg: read("--netcfg")?,
         sweetreboot: read("--sweetreboot")?,
         root_display: opts.get("--display").cloned().unwrap_or(root.clone()),
@@ -1043,12 +1045,12 @@ impl io::Seek for NullSeek {
     }
 }
 
-/// root-ipsw IPSW OUT.simg|--null [--pem FILE] [--no-macho] [--no-cache] [--no-tweaks] [--compare REF.simg] [--now UNIX]
+/// root-ipsw IPSW OUT.simg|--null [--pem FILE] [--no-macho] [--no-cache] [--no-tweaks] [--no-idle] [--compare REF.simg] [--now UNIX]
 fn cmd_root_ipsw(args: &[String]) -> Res<ExitCode> {
     use std::cell::RefCell;
     use std::rc::Rc;
     let (pos, opts, flags) = split(args, &["--pem", "--compare", "--now", "--size", "--tools", "--ssh-key", "--only", "--dump"]);
-    let [src, out] = &pos[..] else { return Err("root-ipsw IPSW(file or URL) OUT.simg|null [--pem FILE] [--no-macho] [--no-cache] [--no-tweaks] [--compare REF.simg] [--now UNIX] [--size 24g]".into()) };
+    let [src, out] = &pos[..] else { return Err("root-ipsw IPSW(file or URL) OUT.simg|null [--pem FILE] [--no-macho] [--no-cache] [--no-tweaks] [--no-idle] [--compare REF.simg] [--now UNIX] [--size 24g]".into()) };
     let ipsw = renegade::ipsw::Ipsw::open(open_src(src)?)?;
     let mut cfg = renegade::rootbuild::Config { now: opts.get("--now").map(|n| n.parse()).transpose()?.unwrap_or(0), ..Default::default() };
     cfg.volume_size = opts.get("--size").map(|s| parse_size(s)).transpose()?;
@@ -1061,6 +1063,7 @@ fn cmd_root_ipsw(args: &[String]) -> Res<ExitCode> {
     cfg.only = opts.get("--only").cloned();
     cfg.macho = !flags.iter().any(|f| f == "--no-macho");
     cfg.tweaks = !flags.iter().any(|f| f == "--no-tweaks");
+    cfg.idle = !flags.iter().any(|f| f == "--no-idle");
     if flags.iter().any(|f| f == "--no-cache") {
         cfg.cache = None;
     }

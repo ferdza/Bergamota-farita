@@ -222,7 +222,7 @@ pub extern "C" fn rr_open_ipsw() -> i32 {
     }
 }
 
-/// Runs the build. Config JSON: {"pem:<key URL>": "<PEM>" (one per key URL of the IPSW), "now": unix seconds, "macho": bool, "cache": bool, "tweaks": bool,
+/// Runs the build. Config JSON: {"pem:<key URL>": "<PEM>" (one per key URL of the IPSW), "now": unix seconds, "macho": bool, "cache": bool, "tweaks": bool, "idle": bool (default true),
 /// "tools": true when a tools bundle is source 1, "ssh_key": "ssh-ed25519 AAAA..."}. The image goes out through `host.write`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rr_build(cfg_ptr: *const u8, cfg_len: usize) -> i32 {
@@ -233,7 +233,7 @@ pub unsafe extern "C" fn rr_build(cfg_ptr: *const u8, cfg_len: usize) -> i32 {
     let r = IPSW.with(|i| -> Result<renegade::rootbuild::Summary> {
         let guard = i.borrow();
         let ipsw = guard.as_ref().ok_or_else(|| bad("no IPSW is open"))?;
-        let mut cfg = renegade::rootbuild::Config { pems: c.iter().filter_map(|(k, v)| k.strip_prefix("pem:").map(|u| (u.to_string(), v.clone()))).collect(), now: c.get("now").and_then(|n| n.parse().ok()).unwrap_or(0), macho: on("macho", true), tweaks: on("tweaks", true), ..Default::default() };
+        let mut cfg = renegade::rootbuild::Config { pems: c.iter().filter_map(|(k, v)| k.strip_prefix("pem:").map(|u| (u.to_string(), v.clone()))).collect(), now: c.get("now").and_then(|n| n.parse().ok()).unwrap_or(0), macho: on("macho", true), tweaks: on("tweaks", true), idle: on("idle", true), ..Default::default() };
         if !on("cache", true) {
             cfg.cache = None;
         }

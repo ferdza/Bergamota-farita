@@ -32,6 +32,8 @@ pub struct Config {
     pub cache: Option<dsc::Options>,
     pub tweaks: bool,
     pub quiet: bool,
+    /// The idle-CPU tweaks (tweaks::idle): on by default, `--no-idle` on the CLI.
+    pub idle: bool,
     /// The prebuilt on-device tools (berga-tools.zip); without them the root has no SSH, no first-boot job, ...
     pub tools: Option<crate::tools::Tools>,
     /// The public key SSH logs in with (needs `tools`).
@@ -48,7 +50,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { pems: Vec::new(), now: 0, verify_aea: false, macho: true, cache: Some(dsc::Options::default()), tweaks: true, quiet: false, tools: None, ssh_key: None, volume_size: None, only: None, entries_tap: None, tap: None }
+        Config { pems: Vec::new(), now: 0, verify_aea: false, macho: true, cache: Some(dsc::Options::default()), tweaks: true, quiet: false, idle: true, tools: None, ssh_key: None, volume_size: None, only: None, entries_tap: None, tap: None }
     }
 }
 
@@ -243,6 +245,7 @@ pub fn build<W: Write + Seek>(ipsw: &Ipsw, cfg: &mut Config, out: W, ev: &mut dy
             board: board.into(),
             adt_target: adt.into(),
             quiet: cfg.quiet,
+            idle: cfg.idle,
             netcfg: cfg.tools.as_ref().and_then(|t| t.get("sweetnet/sweetnetcfg")).map(<[u8]>::to_vec),
             sweetreboot: cfg.tools.as_ref().and_then(|t| t.get("sweetnet/sweetreboot")).map(<[u8]>::to_vec),
             root_display: String::new(),

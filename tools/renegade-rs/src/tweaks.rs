@@ -270,6 +270,138 @@ pub fn quiet(fs: &mut dyn Fs, log: &mut Log) -> Result<()> {
     Ok(())
 }
 
+// ---- idle(): the respawn / crash loops that burn CPU on an idle phone (docs/CPU_IDLE.md) ----
+
+/// launchd's per-domain "disabled" overrides (what `launchctl disable system/LABEL` writes): { label: true }.
+pub const DISABLED_PLIST: &str = "private/var/db/com.apple.xpc.launchd/disabled.plist";
+/// Jobs measured respawning every few seconds (NOTES.md "CPU thieves", 2026-10-26): gamepolicyd (memory watermark ->
+/// EXC_RESOURCE), wifip2pd, fairplayd.H2, asd, seputil's SepUpdateTimer. None is on the GPU/SSH/USB-net path.
+/// coreduetd: busy loop ~0.9 core when locked, measured by LMasterPiec3/ios-sweet NOTES.md 2026-11-09 (iOS 16/18 on SM7150).
+pub const IDLE_DISABLE: [&str; 6] = ["com.apple.gamepolicyd", "com.apple.wifip2pd", "com.apple.fairplayd.H2", "com.apple.asd", "com.apple.SepUpdateTimer", "com.apple.coreduetd"];
+/// Throttled (not disabled) on top of QUIET_THROTTLE: SpringBoard and the kernel still want them.
+pub const IDLE_THROTTLE: [(&str, i64); 2] = [("com.apple.usernotificationsd", 60), ("com.apple.watchdogd", 60)];
+/// On-demand extension executables that abort at launch (speech AUSPs, BlastDoor), parked like the web page's
+/// "Quiet crash loops" button does (same folder and README, so its "Restore" undoes this too).
+pub const IDLE_PARK: [&str; 5] = ["SiriAUSP", "MauiAUSP", "MacinTalkAUSP", "KonaSynthesizer", "MessagesBlastDoorService"];
+pub const IDLE_PARK_ROOTS: [&str; 3] = ["System/Library", "usr/libexec", "Applications"];
+pub const PARK_DIR: &str = "private/var/root/disabled-bin";
+pub const IDLE_NOTE: &str = "private/var/root/IDLE-CPU.txt";
+
+/// disabled.plist gets `true` for the loops (merged, other keys kept). Returns the labels newly disabled.
+fn idle_disable(fs: &mut dyn Fs, keep_bluetooth: bool) -> Result<Vec<String>> {
+    let mut want: Vec<&str> = IDLE_DISABLE.to_vec();
+    if !keep_bluetooth {
+        want.push(BT_LABEL); // no Bluetooth port: bluetoothd faults in a loop (reason=1201)
+    }
+    let (mut pl, uid, gid, mode) = if fs.exists(DISABLED_PLIST) {
+        let (u, g, m) = fs.stat(DISABLED_PLIST)?;
+        (load(fs, DISABLED_PLIST)?, u, g, m)
+    } else {
+        (Value::dict(), 0, 0, 0o644)
+    };
+    let d = dict_mut(&mut pl, "disabled.plist")?;
+    let mut added = Vec::new();
+    for l in want {
+        if !matches!(d.get(l), Some(Value::Bool(true))) {
+            d.insert(l.into(), Value::Bool(true));
+            added.push(l.to_string());
+        }
+    }
+    if !added.is_empty() {
+        let dir = DISABLED_PLIST.rsplit_once('/').map_or("", |x| x.0);
+        fs.makedirs(dir)?;
+        save(fs, DISABLED_PLIST, &pl, uid, gid, mode, Fmt::Binary)?;
+    }
+    Ok(added)
+}
+
+/// ThrottleInterval raised (never lowered) on the jobs that exist; returns how many changed.
+fn idle_throttle(fs: &mut dyn Fs) -> Result<usize> {
+    let (uid, gid, mode) = fs.stat(LAUNCHD_PLIST)?;
+    let mut pl = load(fs, LAUNCHD_PLIST)?;
+    let Some(Value::Dict(jobs)) = dict_mut(&mut pl, "launchd.plist")?.get_mut("LaunchDaemons") else { return Ok(0) };
+    let mut n = 0;
+    for j in jobs.values_mut() {
+        let Some(l) = j.get("Label").and_then(Value::as_str).map(str::to_string) else { continue };
+        let Some((_, t)) = QUIET_THROTTLE.iter().chain(IDLE_THROTTLE.iter()).find(|(q, _)| *q == l) else { continue };
+        if let Value::Dict(d) = j {
+            let cur = match d.get("ThrottleInterval") {
+                Some(Value::Integer(i)) => *i,
+                _ => 0,
+            };
+            if cur < *t as i128 {
+                d.insert("ThrottleInterval".into(), Value::Integer(*t as i128));
+                n += 1;
+            }
+        }
+    }
+    if n > 0 {
+        save(fs, LAUNCHD_PLIST, &pl, uid, gid, mode, Fmt::Binary)?;
+    }
+    Ok(n)
+}
+
+/// The crash-looping extension executables moved to /var/root/disabled-bin/<path with / as _>, one "DEST ORIG" line
+/// each in its README. Returns the original paths.
+fn idle_park(fs: &mut dyn Fs) -> Result<Vec<String>> {
+    let mut parked = Vec::new();
+    let mut readme = String::new();
+    for base in IDLE_PARK_ROOTS {
+        if !fs.is_dir(base) {
+            continue;
+        }
+        let mut found: Vec<String> = fs
+            .walk(base)?
+            .into_iter()
+            .filter(|p| IDLE_PARK.contains(&p.rsplit('/').next().unwrap_or("")) && !fs.is_dir(p) && fs.readlink(p).is_none())
+            .collect();
+        found.sort();
+        for p in found {
+            let orig = format!("/{}", p.trim_start_matches('/'));
+            let name = orig.replace('/', "_");
+            let dst = format!("{PARK_DIR}/{name}");
+            if fs.exists(&dst) {
+                continue;
+            }
+            fs.makedirs(PARK_DIR)?;
+            fs.rename(&p, &dst)?;
+            readme.push_str(&format!("/var/root/disabled-bin/{name} {orig}\n"));
+            parked.push(orig);
+        }
+    }
+    if !readme.is_empty() {
+        let rp = format!("{PARK_DIR}/README");
+        let mut cur = if fs.exists(&rp) { fs.read(&rp)? } else { Vec::new() };
+        cur.extend_from_slice(readme.as_bytes());
+        fs.write(&rp, &cur)?;
+        fs.chmod(&rp, 0o644)?;
+        fs.chown(&rp, 0, 0);
+    }
+    Ok(parked)
+}
+
+pub const IDLE_NOTE_TEXT: &str = "Idle-CPU tweaks of this root (renegade idle(); see docs/CPU_IDLE.md).\n\
+Undo:\n\
+- jobs off: remove the keys from /private/var/db/com.apple.xpc.launchd/disabled.plist, or launchctl enable system/LABEL.\n\
+- parked executables: the web page's Restore, or mv each 'DEST ORIG' line of /var/root/disabled-bin/README back.\n\
+- ThrottleInterval 60 s on replicatord, appprotectiond, passd, findmydeviced, mobileactivationd, spaceattributiond, PerfPowerServices, webinspectord, usernotificationsd, watchdogd: edit launchd.plist, or rebuild the root with --no-idle.\n";
+
+/// idle(): everything above plus a note on the root saying how to undo it (--no-idle / SWEET_IDLE=0 skips it).
+/// `keep_bluetooth`: the BlueTool stub is in this root, so bluetoothd is being brought up, not looping on nothing.
+pub fn idle(fs: &mut dyn Fs, log: &mut Log, keep_bluetooth: bool) -> Result<()> {
+    let off = idle_disable(fs, keep_bluetooth)?;
+    let thr = if fs.exists(LAUNCHD_PLIST) { idle_throttle(fs)? } else { 0 };
+    let parked = idle_park(fs)?;
+    log.push(format!("idle: disabled.plist +{} {}, ThrottleInterval raised on {thr}, parked {} {}", off.len(), py_list(&off), parked.len(), py_list(&parked)));
+    if !off.is_empty() || thr > 0 || !parked.is_empty() {
+        fs.makedirs("private/var/root")?;
+        fs.write(IDLE_NOTE, IDLE_NOTE_TEXT.as_bytes())?;
+        fs.chmod(IDLE_NOTE, 0o644)?;
+        fs.chown(IDLE_NOTE, 0, 0);
+    }
+    Ok(())
+}
+
 /// containers(): the container folders iOS keeps on the data volume.
 pub fn containers(fs: &mut dyn Fs, log: &mut Log, root_display: &str) -> Result<()> {
     for (sub, uid) in [("Bundle", 33), ("Data/System", 0), ("Shared/SystemGroup", 0), ("Temp", 0)] {
@@ -646,6 +778,8 @@ pub struct Config {
     pub board: String,
     pub adt_target: String,
     pub quiet: bool,
+    /// idle(): the respawn/crash loops quieted in the root (off in Default; the root build turns it on).
+    pub idle: bool,
     pub netcfg: Option<Vec<u8>>,
     pub sweetreboot: Option<Vec<u8>>,
     /// How paths are shown in messages (Python prints absolute paths under the root it was given).
@@ -665,6 +799,9 @@ pub fn run(fs: &mut dyn Fs, cfg: &Config, log: &mut Log) -> Result<()> {
     launchd(fs, log)?;
     if cfg.quiet {
         quiet(fs, log)?;
+    }
+    if cfg.idle {
+        idle(fs, log, cfg.tools.as_ref().is_some_and(|t| t.get(crate::tools::BLUETOOL_STUB).is_some()))?;
     }
     containers(fs, log, r)?;
     launchservices(fs, log, r)?;
