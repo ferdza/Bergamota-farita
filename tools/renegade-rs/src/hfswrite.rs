@@ -410,8 +410,11 @@ pub fn build<W: WriteAt>(entries: &[Entry], opts: &Options, out: &mut W, data: &
     // the two hidden root files of a journaled volume (newfs_hfs -J): .journal_info_block, .journal
     let jblocks = match opts.journal {
         Some(n) => {
-            if n % bs != 0 || !(256 * 1024..=2 << 30).contains(&(n as u64)) {
-                return Err(bad("journal size must be a multiple of the block size, 256 KiB..=2 GiB"));
+            // XNU's journal_create needs size >= phys_blksz * (phys_blksz / 16) (1 MiB for 4096-byte blocks) and journal_open
+            // (every later mount) allows at most 1 GiB (hfs_journal.c; docs/audit/HFS_JOURNAL_VERIFY.md M2)
+            let min = (1u64 << 20).max(bs as u64 * (bs as u64 / 16));
+            if n % bs != 0 || !(min..=1u64 << 30).contains(&(n as u64)) {
+                return Err(bad("journal size must be a multiple of the block size, 1 MiB..=1 GiB"));
             }
             Some(n / bs)
         }
@@ -451,7 +454,13 @@ pub fn build<W: WriteAt>(entries: &[Entry], opts: &Options, out: &mut W, data: &
     // catalog size estimate: records are at most ~ 520 + 248 bytes; leave room for index nodes
     let nrec = 2 * (order.len() + groups.len() + 3 + if jblocks.is_some() { 2 } else { 0 });
     let cat_bytes_est = (nrec as u64 * 330 + 4 * CAT_NODE as u64) * 5 / 4;
-    let cat_blocks_est = blocks_of(cat_bytes_est.max(16 * CAT_NODE as u64));
+    let mut cat_blocks_est = blocks_of(cat_bytes_est.max(16 * CAT_NODE as u64));
+    if jblocks.is_some() {
+        // a journaled volume's catalog extent must be a whole number of B-tree nodes: from the second mount on, XNU opens
+        // the journal first and BTOpenPath fails on a non-integral extent (docs/audit/HFS_JOURNAL_VERIFY.md M1)
+        let per = ((CAT_NODE as u32) / bs).max(1);
+        cat_blocks_est = cat_blocks_est.div_ceil(per) * per;
+    }
     let ext_blocks = blocks_of(16 * EXT_NODE as u64);
     let attr_blocks = blocks_of(4 * ATTR_NODE as u64);
     let journal_total = jblocks.map_or(0, |n| n + 1); // the Journal Info Block (one block) and the journal

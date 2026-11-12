@@ -114,8 +114,20 @@ fn journal_size_is_validated() {
     let try_build = |j| build(&tree(), &o(j), &mut Vec::<u8>::new(), &mut |_, sink| sink(&[0; 5000]));
     assert!(try_build(1000).is_err(), "not a multiple of the block size");
     assert!(try_build(128 * 1024).is_err(), "below 256 KiB");
+    assert!(try_build(512 * 1024).is_err(), "below 1 MiB: journal_create refuses it");
+    assert!(try_build((1 << 30) + 4096).is_err(), "above 1 GiB: journal_open refuses it at the next mount");
     assert!(try_build(4 << 30).is_err(), "above 2 GiB");
     assert!(try_build(16 << 20).is_err(), "does not fit the 8 MiB volume");
+}
+
+#[test]
+fn journaled_catalog_extent_is_a_whole_number_of_nodes() {
+    let (img, _) = image(Some(1 << 20));
+    let vh = &img[1024..];
+    // catalogFile fork data in the volume header: totalBlocks at +284, first extent's blockCount at +292
+    let (total, first) = (be32(vh, 284), be32(vh, 292));
+    assert_eq!(total % 2, 0, "catalog totalBlocks {total}");
+    assert_eq!(first % 2, 0, "catalog first extent {first}");
 }
 
 #[test]
