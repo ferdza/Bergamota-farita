@@ -320,10 +320,10 @@ class SshSession {
         "echo '--- flags now:'; ls -l bgmtl-bb.*",
         "sync",
         "echo 'stopping backboardd (launchd restarts it and SpringBoard; the screen blinks)'",
-        // this root has no killall/pkill: find the pid with ps (toybox), TERM first (the inject's handler logs and exits), KILL if it stays
-        "P=$(ps ax | awk '$NF==\"/usr/libexec/backboardd\" {print $1}'); echo \"backboardd pid: ${P:-none}\"; [ -n \"$P\" ] || exit 1",
+        // this root has no killall, pkill or awk: find the pid with ps and a plain sh loop, TERM first (the inject's handler logs and exits), KILL if it stays
+        "P=$(ps ax | while read pid rest; do case \"$rest\" in */usr/libexec/backboardd) echo $pid;; esac; done); echo \"backboardd pid: ${P:-none}\"; [ -n \"$P\" ] || exit 1",
         "kill $P 2>&1; sleep 3; if kill -0 $P 2>/dev/null; then echo 'still running: kill -9'; kill -9 $P 2>&1; fi",
-        "N=$(ps ax | awk '$NF==\"/usr/libexec/backboardd\" {print $1}'); echo \"new backboardd pid: ${N:-none} (was $P)\"",
+        "N=$(ps ax | while read pid rest; do case \"$rest\" in */usr/libexec/backboardd) echo $pid;; esac; done); echo \"new backboardd pid: ${N:-none} (was $P)\"",
         "sleep 8",
         "echo '--- after 8 s:'; ps ax | grep -E 'backboardd|SpringBoard' | grep -v grep | head -4",
         "tail -n 6 bgmtl.log 2>/dev/null",
