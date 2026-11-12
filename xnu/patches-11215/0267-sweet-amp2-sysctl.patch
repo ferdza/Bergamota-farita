@@ -40,7 +40,7 @@ index 0000000..b49d532
 +#include <sys/param.h>
 +#include <sys/systm.h>
 +#include <sys/sysctl.h>
-+#include <kern/sweet_amp_logic.h>
++#include "../../osfmk/kern/sweet_amp_logic.h"
 +
 +extern void sweet_amp_get_stats(struct swamp_stats *out);
 +extern int sweet_amp_mode;
