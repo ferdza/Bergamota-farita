@@ -60,6 +60,8 @@ class Session {
   sshKey = $state(safeGet("bergamota.sshKey"));
   patchInfo = $state.raw<IpswInfo | null>(null);
   patchSummary = $state.raw<BuildSummary | null>(null);
+  /** Chlorophyll (GPU 3D) in the root: set from the build's own `chlorophyll:` log line; null until the tweaks ran. */
+  patchGpu = $state<{ ok: boolean; text: string } | null>(null);
   private patcher: Patcher | null = null;
   // Apple's AEA keys the user must fetch by hand when this host has no /api/fcs-key relay (GitHub Pages)
   keysNeeded = $state<string[]>([]);
@@ -185,6 +187,7 @@ class Session {
     this.patchBytes = { done: 0, total: 0 };
     this.patchStartedAt = performance.now();
     this.patchSummary = null;
+    this.patchGpu = null;
     let lock: WakeLockSentinel | null = null;
     try {
       lock = await navigator.wakeLock?.request("screen").catch(() => null) ?? null;
@@ -211,12 +214,16 @@ class Session {
         else {
           this.patchNote = e.text;
           this.addLog("note", e.text);
+          if (e.text.startsWith("chlorophyll:")) this.patchGpu = { ok: /libraries in/.test(e.text), text: e.text };
         }
       };
       const info = await p.open(ipsw);
       this.patchInfo = info;
       const tools = await fetchTools();
-      if (!tools) this.addLog("note", "no tools bundle on this site: the root gets no SSH server and no first-boot helpers");
+      if (!tools) {
+        this.addLog("note", "no tools bundle on this site: the root gets no SSH server, no first-boot helpers and no GPU userland");
+        this.patchGpu = { ok: false, text: "chlorophyll: no tools bundle on this site" };
+      }
       const key = this.sshKey.trim();
       if (key && sshKeyProblem(key)) throw new Error(sshKeyProblem(key)!);
       safeSet("bergamota.sshKey", key);

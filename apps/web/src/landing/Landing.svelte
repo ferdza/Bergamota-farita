@@ -14,7 +14,7 @@
     ["SpringBoard, the home screen and the stock apps", "Boots", "yes"],
     ["All 8 CPU cores, touch, buttons, battery", "Works", "yes"],
     ["USB networking and SSH", "Works", "yes"],
-    ["GPU acceleration (Adreno 630)", "In progress", "wip"],
+    ["GPU acceleration (Adreno 630)", "Included, experimental", "wip"],
     ["Wi-Fi, cellular, audio, camera, sensors", "Not yet", "no"],
   ];
 </script>

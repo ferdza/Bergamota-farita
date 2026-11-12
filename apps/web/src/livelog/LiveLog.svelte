@@ -200,14 +200,14 @@
             <!-- MODULE 2: GPU ADRENO 630 & ÉCRAN 60 HZ -->
             <div class="dash-card">
               <div class="dash-card-head">
-                <h3>🎮 GPU Adreno 630 & Écran 60 Hz</h3>
-                <span class="dash-sub">Accélération matérielle Metal/Vulkan (Chlorophyll) en mode direct 60 Hz.</span>
+                <h3>🎮 GPU Adreno 630</h3>
+                <span class="dash-sub">Chlorophyll est installé et câblé par défaut par l'installeur (rien à activer) ; il ne démarre que si le noyau boote avec sweetgpu=8. Les boutons servent à réparer.</span>
               </div>
               <div class="dash-card-body">
                 <div class="dash-actions">
                   {#if !sshs.gpuWired}
-                    <button class="btn leaf" disabled={!!sshs.busy} onclick={() => confirm("Activer l'injection Chlorophyll dans backboardd ? (Prend effet au prochain boot)") && sshs.gpuWire()}>
-                      🚀 Activer le compositeur GPU
+                    <button class="btn leaf" disabled={!!sshs.busy} onclick={() => confirm("Câbler Chlorophyll dans backboardd ? (Normalement déjà fait par l'installeur ; prend effet au prochain boot)") && sshs.gpuWire()}>
+                      🔧 Réparer / câbler le GPU
                     </button>
                   {:else}
                     <button class="btn ghost" disabled={!!sshs.busy} onclick={() => sshs.gpuOff()}>

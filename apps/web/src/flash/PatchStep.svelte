@@ -35,6 +35,7 @@
       <input bind:value={session.sshKey} placeholder="ssh-ed25519 AAAA… you@computer" autocomplete="off" spellcheck="false" aria-invalid={!!keyProblem} />
       <small class:problem={!!keyProblem}>{keyProblem ?? "The phone runs an SSH server (over the USB cable) that only this key can open. Without a key there is no SSH. Paste the contents of ~/.ssh/id_ed25519.pub, never the private key."}</small>
     </label>
+    <p class="gpu-note"><b>GPU 3D is included.</b> The root gets the Chlorophyll graphics driver and backboardd is wired to it, so there is nothing to switch on afterwards. It only goes live when the boot image you boot carries the GPU arguments (<code>tools/install/build-boot.sh</code>, see INSTALL.md); otherwise the phone draws on the CPU, as before.</p>
     <p class="muted">It takes a while: tens of minutes on a laptop. Keep this tab open and the computer awake.</p>
     <div class="row">
       <button class="btn leaf" disabled={!!keyProblem} onclick={() => session.startPatch()}>Start patching</button>
@@ -77,6 +78,11 @@
     <p>
       {session.patchInfo ? `iOS ${session.patchInfo.version} (${session.patchInfo.build}) for ${session.patchInfo.device}` : "The root"} is in this browser as <code>{session.picked?.name}</code>{#if session.picked} ({fmtBytes(session.picked.size)}){/if}. Next, connect the phone.
     </p>
+    {#if session.patchGpu?.ok}
+      <p class="gpu ok" role="status"><b>GPU 3D: included.</b> Chlorophyll is in the root and backboardd is wired to it (armed). It starts on the GPU when the boot image has the GPU arguments; the kill switch and the recovery boot-arg are in INSTALL.md.</p>
+    {:else}
+      <p class="gpu no" role="status"><b>GPU 3D: not in this root.</b> {session.patchGpu?.text ?? "The build did not report Chlorophyll."} The phone will draw on the CPU. Run the Chlorophyll workflow, republish this site and patch again to get it.</p>
+    {/if}
     <div class="row"><button class="btn leaf" onclick={() => session.go("Connect")}>Connect the phone</button></div>
   {:else}
     <h2 id="patch-title">Patching stopped.</h2>
@@ -92,6 +98,10 @@
 </section>
 
 <style>
+  .gpu-note { margin: 0 0 14px; }
+  .gpu { margin: 12px 0 16px; padding: 10px 14px; border: 2px solid var(--ink); border-radius: 4px; }
+  .gpu.ok { border-color: var(--leaf); }
+  .gpu.no { border-color: #b3261e; color: #6b1d0c; }
   .key { display: grid; gap: 6px; margin: 4px 0 18px; font-size: 15px; }
   .key input { font: 500 14px var(--mono); padding: 12px 14px; border: 2px solid var(--ink); border-radius: 4px; background: var(--white); min-width: 0; }
   .key input[aria-invalid="true"] { border-color: #b3261e; }
