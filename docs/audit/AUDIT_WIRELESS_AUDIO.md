@@ -152,3 +152,48 @@ We are the **only project in the survey with working iOS Bluetooth**. Nobody to 
 | 3 | Test pairing + A2DP/HFP with headphones; log `SWEET BT:` for rewritten opcodes; decide which Apple vendor commands deserve real emulation | 0239, `bsd/dev/beryllium_bt_hci.c` | 3-5 d | medium | yes |
 | 4 | Unique BD_ADDR (serial-derived), `/dev/btwake` stub, BT/Wi-Fi rail refcount | `tools/mkadt.py`, 0104/0117 | 1-2 d | low | yes |
 | 5 | Coexistence with Wi-Fi (`sweetwlan` split) | `beryllium_wlan.c` stage table | 1 d | medium | yes |
+
+## 3. Audio (speaker, earpiece, microphones; WCD9340 "Tavil", ADSP)
+
+### 3.1 Status table
+
+| Project | State |
+|---|---|
+| **Ours** | **Nothing.** No audio patch in `xnu/patches-11215` or `-12377` (`ls | grep -i audio` empty). No ADSP boot, no APR, no codec. iOS side: iPhone X (D22) identity; mediaserverd/VirtualAudio only sees CoreAudio's Null device (NOTES l.841 documents a VirtualAudio SIGSEGV loop on iOS 16, since parked by root tweaks `root_tweaks18.py`) |
+| HackiOS (SM7325 redwood, iOS 16.5) | **Speakers and microphone work** (`docs/index.md`, `devices/redwood.md`: "audio works, adsp=1 sound=4 mic=4"): `drivers/audio/hakios.adsp.c` (ADSP PAS boot via TZ image 1, SMP2P, GLINK, QRTR, **APR** `apr_audio_svc`), `hakios.sound.c` (ASM stream + ADM COPP + AFE port 0x9000 TDM), `hakios.speaker.c` (two Awinic AW88261 amps, I2C bit-banged, firmware config from the phone's `/vendor/etc/aw882xx_acf.bin`), `hakios.guard.c` (software speaker protection), `hakios.mic.c`; user side `userland/src/audio_plugin.c` = a CoreAudio **AudioServerPlugIn** presenting "Speaker", "Hawking", "Actuator", "Codec" devices that VirtualAudio.plugin routes through the iPhone X `d22_speaker_general` chain. OBSERVED (heads of the files) |
+| ios-topaz (SM6225) | ADSP PAS boot + SMP2P + GLINK + QRTR + GPR (AudioReach) only: patches 0144-0146 (port of topaz-woa where the speaker works on Windows). README: "No ... audio". OBSERVED |
+| edi194 / JaneAwA / UniXNU-enchilada / PalanBanana | nothing / not started / skeleton (PalanBanana "0084 WCD9375 audio" refuses to run, `FORKS_SURVEY` C) |
+| Android/Linux on 6T | postmarketOS mainline: speaker and codec status UNVERIFIED (could not fetch the wiki: Anubis block). Linux `sdm845-oneplus-fajita.dts` deletes the speaker DAI link because "TFA9894 codec is unsupported", so only earpiece/headphone path (WCD9340) is described |
+
+### 3.2 What the 6T needs (from Linux dts, spec only; OBSERVED via WebFetch of `sdm845-oneplus-common.dtsi`, `-fajita.dts`)
+
+* DSP: ADSP (`adsp.mbn`, carve-out `adsp_mem` 0x8c500000 + 0x1a00000 on the generic layout, **not** Poco F1's 0x1e00000), booted by TZ PAS image id 1 like the MPSS path we already have for MSS (but MSS on SDM845 uses MBA, ADSP/CDSP/SLPI use **PAS**; `docs/WIFI_BT_IOS18.md` already notes "SDM845 MSS boots by MBA self-auth, not PAS").
+* Speaker path: **TFA9894** (NXP) smart amp on i2c4 @0x34 (only a comment in the dts), fed by the SoC's **QUATERNARY_MI2S_RX** (sound card `speaker-dai-link`; Poco F1 uses TAS2559/60 on the same QUAT MI2S, i2c5 @0x4c). It needs NO SLIMbus and no WCD9340: ADSP AFE port + amp register init (+ the vendor `tfa98xx.cnt` container file from the phone's Android: UNVERIFIED which partition: `/vendor/firmware/` is in `system`/`vendor`, not in `modem`, so it needs a read of the Android vendor partition (user OK), or the OnePlus 6T firmware from postmarketOS `firmware-oneplus-sdm845`).
+* Earpiece, headphones (6T has no jack: USB-C adapters/BT), analog mics: WCD9340 over **SLIMbus**. Linux needs `qcom-ngd-ctrl.c`: the apps-side NGD controller talks to the ADSP over QRTR service **0x0301** ("SLIMBUS_QMI_SVC_ID", version 1) to obtain the bus, then codec registers via SLIMbus messages, plus `wcd934x.c` (>10k lines of register tables; spec only). This is the heavy part: **do the speaker first, defer WCD9340**.
+* Reset gpio 64 for WCD9340; mic bias 2.7 V; MCLK 9.6 MHz (`WCD934X_DEFAULT_MCLK_RATE`, Linux `sdm845.c`).
+* Alert slider (3-position switch) is a GPIO key (Linux: "Vibrate" position only), fits the keys driver.
+
+### 3.3 Blockers
+
+1. No ADSP boot. Needs the PAS SCM calls (`qcom_scm_pas_init_image/mem_setup/auth_and_reset`, service 0x0C); xnu 0106-0111 only do MBA/MSS. HackiOS/topaz both wrote PAS code (HackiOS's is APSL 2.0 and ADSP-specific numbers are redwood: image 1, item 443/429, IPCC), SDM845 differs (**no IPCC**: SDM845 uses APCS/IPC bits via mailbox, as our 1112 SMP2P doorbell already does; SMP2P ADSP items 443/429 are the same family as Linux `smp2p` on SDM845 = remote pid 2).
+2. APR (not GPR) service set: ASM, ADM, AFE on `apr_audio_svc` over GLINK: HackiOS shows the working order for redwood; Linux `sound/soc/qcom/qdsp6/{q6afe,q6asm,q6adm,q6routing}.c` is the spec.
+3. The audio DSP reads sample buffers through the apps SMMU (HackiOS: stream 0x1801 with `qcom,smmu-sid-mask 0xf`; **SDM845 value UNVERIFIED**, from Linux `sdm845.dtsi` `q6asmdai`/`q6adm` iommus: check the local clone). The SDM845 hypervisor resets the SoC on an unmatched stream (`FORKS_SURVEY` A1): same lesson as USB/GPU, so reuse our SMMU context code (0094/0254).
+4. The TFA9894 amp: I2C and firmware container unknown; **no protection without the DSP's speaker protection**: HackiOS wrote a software `guard` (gain, high-pass, power average, peak limiter) because the vendor speaker protection is in the DSP. Same risk on the 6T: a mis-driven amp can damage the speaker. Start at -20 dB below nominal like HackiOS `sound_below=160`.
+5. iOS side: needs a HAL path. Our root has no VirtualAudio device for the 6T; HackiOS's plug-in approach (MIT, iOS 16.5, `userland/src/audio_plugin.c`) may be reusable but **iOS 18.7.8's VirtualAudio/coreaudiod layout is UNVERIFIED**.
+6. Everything above shares `adsp_mem`/SMEM/IPC code with Wi-Fi (HackiOS had to put locks around the shared always-on mailbox and the SMEM allocator when Wi-Fi and ADSP ran together, `hakios.adsp.c` head). Ours: `beryllium_wlan.c` owns SMEM allocation; any audio code must go through its lock.
+
+### 3.4 Ordered plan
+
+| # | Step | Files | Effort | Risk | Phone? |
+|---|---|---|---|---|---|
+| 0 | Prereq: Wi-Fi chip half working on 6T (shared SMEM/GLINK/QRTR/TZ code) | section 1 | | | |
+| 1 | PAS client (`init_image`, `mem_setup`, `auth_and_reset`, `shutdown`) + ADSP load from `modem_a`? **no**: ADSP image lives in the `dsp_a` partition (Android `firmware_mnt`/`dsp`; AGENTS rule "keep ... backups intact", read only): UNVERIFIED which partition holds `adsp.mdt`. Probe inventory first | new `bsd/dev/sweet_adsp.c` (reuse 1111 mdt loader) | 3-5 d | high first time | yes |
+| 2 | SMP2P ready + GLINK `lpass` edge + QRTR IPCRTR; log the services the ADSP announces (expect ~10 incl. SLIMbus 0x0301, APR) | reuse 1112/1113 | 3-4 d | medium | yes |
+| 3 | APR: ASM + ADM + AFE on QUAT_MI2S_RX; 1 kHz tone; SMMU stream for the audio ion buffers | `sweet_adsp.c` | 1 wk | medium | yes |
+| 4 | TFA9894 amp bring-up over the i2c4 GENI bus (existing GENI I2C code for touch 0252/0253 is SE12; add SE4) with firmware container; fade-in tone at -20 dB; add software guard | `sweet_tfa.c` | 1 wk | **audible/hardware risk** | yes |
+| 5 | `/dev/sweet-audio` + AudioServerPlugIn "Speaker" (HackiOS design, MIT user code with notice) in the root | `userland/`, renegade `tweaks` | 1-2 wk | medium (iOS 18 differences) | yes |
+| 6 | Mic: SLIMbus NGD + WCD9340 (TX path), or MI2S-attached digital mic? (6T mics are analog via WCD9340 -> needs SLIMbus) | | 3-6 wk | high | yes |
+| 7 | Earpiece / headset via WCD9340 | | with 6 | | yes |
+
+Shortest realistic path to "iOS plays a sound from the 6T speaker": steps 1-5, **~5-8 weeks** after Wi-Fi's shared plumbing exists.
+BT A2DP (section 2) is the fastest *audible* route (needs no DSP): worth testing first.
