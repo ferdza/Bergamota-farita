@@ -301,3 +301,83 @@ the method is given in F-39.
   or fail loudly.
 - `canvas = points x scale` (375x812 @3x = 1125x2436) is scaled onto the 1080x2340 panel by the kernel; aspect error 0.07 % (OK). `sweet-fbcon` (`reg/width/height/stride`) and `board.h` must change
   together: a single source of truth (generate `board.h` values from `BOARDS`) would remove that drift risk. 1 hour.
+
+## 4. What to adopt from other projects
+
+Sources read: local clones `UniXNU_UniXNU` (docs/concepts/boot-chain.md, docs/drivers/darwin-boot.md), `urielc918_ios-switch` (shim-nx README, upstream NOTES-sweet.md) and the web results
+cited in section 5. U-Boot for `nabu`, iOSPlus10 `DarwinBoot` (SM8450) and hackiosx.dev were **not** fetched (UNVERIFIED; items marked "general" come from public knowledge of those tools, not from a source read here).
+
+| Project | How it boots | Pattern worth adopting | Maps to |
+|---|---|---|---|
+| UniXNU / DarwinBoot (read) | Android bootloader -> BootShim (gzip'd, ARM64 image header) -> Mu/EDK2 UEFI FV -> UniXNU boot manager (TOML, kits) -> DarwinBoot -> XNU at EL1, MMU off | **Validation list before the jump**: Mach-O magic/cpu type/filetype, entry inside an executable segment, segments page aligned, non-overlapping and inside the window; trust-cache header/offset/sorted-hash checks; the ADT is copied with 64 KiB slack and **patched at boot** (global, entry, then `[entry.chosen]` last); boot-args built by the loader | F-04, F-17, F-32, F-33, F-36 |
+| Mu / EDK2 for the 6T (`mu_platforms_oneplus6t`, WOA-Drivers issue 26; web, not fetched in full) | `fastboot boot uefi.img` on the same phone, same ABL | A second, independent description of the 6T memory map (FD base/size, reserved regions) to cross-check `HIGH_*` and the framebuffer region; UEFI also offers GOP, a shell and variables. Cost: a full firmware stack, and the same CrashDump on shutdown (WOA issue 26) | F-32, F-35 |
+| ios-switch `shim-nx` (read) | hekate -> ATF -> shim -> XNU on Tegra | Blue PANIC screen with ESR/ELR/FAR **plus a log on the SD card**, "Volume-down at any time (also on the panic screen) reboots to RCM", self-tests at boot | F-09, F-07, F-24 |
+| ios-sweet (read: NOTES-sweet) | same family as this repo | **Persistent console log**: kernel `_cnputs` ring written to the last 4 MiB of `userdata` every second with SYNCHRONIZE CACHE (patch 0047), read from recovery; **journaled HFS+** root (`mkfs.hfsplus -J`, "Image v4") | F-09, F-29 |
+| U-Boot (general; nabu docs not read) | proper bootloader with env, fastboot, `bootm`/FIT | FIT-style hash/signature check of the payload; `fdt` fix-up commands (resize, set `/chosen`, `memory`); an environment for the command line instead of a rebuild per boot-arg | F-03, F-37 |
+| iOSPlus10 DarwinBoot (SM8450; not read) | UEFI, per its docs | same loader protocol as UniXNU's DarwinBoot | F-04 |
+
+### Concrete adoptions, ranked by value for the 6T
+
+1. **Clear the Qualcomm download-mode cookie on every Enxerto exit and from the kernel reboot path** (F-01/F-24). Without it every other robustness item is moot on the 6T.
+2. **Persistent crash/console log** (F-09): panic record into `ramoops`, plus the ios-sweet ring-in-userdata trick for the kernel. A `fastboot oem log` that returns it with `upload`.
+3. **ADT patching in Enxerto** (F-32/F-33/F-35/F-36): memory window from the live DT, framebuffer carve-out size, per-boot random seed, ECID/MAC from the SoC serial. UniXNU does exactly this (copy + 64 KiB slack + patches).
+4. **Payload verification** (F-03/F-04/F-17): BLAKE2b hash in the header (the primitive is already linked) and UniXNU's segment/entry rules. Signatures only if a locked-bootloader flow ever exists (it cannot on the 6T with a custom `boot`).
+5. **Journaled HFS+** or an fsck step (F-29).
+6. **A real recovery console in Enxerto fastboot**: `oem poweroff`, `oem reboot-android`, `oem log`, `oem dtb`, `oem cmdline:<args>` (one-shot override of the payload's boot-args held in RAM, so recovery boot-args such as `sweetdenypath=` need no rebuild), `oem getvar current-slot`. All can stay inside the existing allowlist model because none writes storage.
+8. **EL2 handling** (F-13): not needed on Qualcomm (EL1 entry, hypervisor owns EL2). UEFI-based projects also leave at EL1 with the MMU off, so Enxerto's final handoff (`mmu_off_jump`, caches cleaned to PoC, MMU off, `x0 = boot_args`) is the same contract. Only add a `CurrentEL` guard.
+9. **"kexec-like" warm reboot** (iOS -> Enxerto fastboot without a reset): keeps the CPU/PMIC state and sidesteps CrashDump entirely. Needs: Enxerto image kept in a reserved region (ADT `memory-map`), kernel parks CPUs 1-7 with PSCI CPU_OFF, quiesces UFS/USB/SMMU, then branches. Effort 3-5 days and a new class of bugs; only worth it if F-01's cookie turns out not to be the cause. UNVERIFIED feasibility.
+
+## 5. Recovery runbook for the OnePlus 6T
+
+Only steps found in a source are listed; each carries its source. Where sources disagree both are shown. Nothing below was run on a phone in this audit.
+
+**Before anything destructive** (AGENTS.md + sources): keep the existing partition backups; additionally back up `persist`, the modem/EFS partitions (Windows-on-6T maintainers: LTE needs QCN/Modem+EFS saved
+via TWRP or the MSM tool before the OS is replaced, WOA-Drivers issue 26). Confirm each destructive step with the user (AGENTS.md).
+
+### R1. Leaving Qualcomm CrashDump
+- Repo (OBSERVED by the user, docs/FAJITA.md): hold Power + Vol Up for ~15 s.
+- Web (blogs, via search; unverified): hold Vol Up + Power ~10 s (powers off); another says Vol Up + Vol Down + Power 5-10 s; a third says that combination from the CrashDump screen goes to fastboot. They conflict:
+  try Power + Vol Up first (the only one the user has seen work), then the three-key chord.
+- UBports forum: "hold for bootmode as long as you humanly can, and when you can hold no more it should turn on."
+- Do not repeat this on a running iOS (HFS+ risk, F-29); the order is: avoid the reset, not recover from it.
+
+### R2. Getting to fastboot
+- From a running iOS: `ssh root@192.168.7.2 sweetreboot fastboot` (docs/FAJITA.md, REBOOT_MODE.md). On the 6T this is itself UNVERIFIED because 0137 was written for beryllium (F-01/F-02).
+- From Enxerto fastboot: `fastboot reboot-bootloader` (IMEM only, F-02) — may end in CrashDump.
+- With the phone off: the standard key chord (Power + Vol Up + Vol Down) is mentioned in the web results above for the 6T; the exact chord for ABL fastboot was not confirmed from an official source here (UNVERIFIED).
+- A bad `fastboot boot` can leave the phone "on the Fastboot Mode flashscreen and doing nothing" (XDA thread via search): hold the CrashDump/power-off combination (R1) and retry with the other slot active (R4).
+
+### R3. EDL (9008) and the MSM Download Tool
+- UBports forum (Windows tool, from a user): install the driver once while the phone is in CrashDump mode connected to the PC; then unplug and power off; start the MSM tool; "hold the volume up on the phone
+  and at the same time just plug it to PC"; the tool detects the device and runs.
+- Web (via search, several sources): the MSM tool talks to the phone over EDL and restores stock OxygenOS; "EDL flashing is not dependent on the bootloader state" (community reports).
+  MSM restores the whole device (including `persist` and modem), so it is the last resort and **erases the iOS install and Android user data**; use it only when R1/R2/R4 fail and confirm with the user.
+- Not found in any source read: a `fastboot oem edl` / `adb reboot edl` command for this ABL. Do not assume one exists.
+- Charge: a user advises charging ~24 h or attaching to a powered-on PC before restore attempts (UBports forum; anecdotal).
+
+### R4. Fastboot-level restore of Android (Linux)
+- Slots: flash both A and B when restoring (LineageOS/XDA guides, via search). To keep the other slot, skip wiping data and skip `persist` (UBports forum, AntiDroid `flash_all.sh`, OnePlus 6T only).
+- If `fastboot boot` of a recovery fails, confirm which slot is active (`fastboot getvar current-slot`) and switch (`fastboot --set-active=b`) before retrying (Sailfish OS forum, via search). If it persists, restore stock with the
+  MSM tool (R3).
+- Stock fastboot images: the XDA "stock fastboot ROMs for OnePlus 6T" thread (found via search; not fetched here).
+- What the iOS install touched: only `userdata`. Android then offers a data reset; or `fastboot erase userdata`/`-w` from ABL (not from Enxerto, F-12).
+- **Never** `fastboot flashing lock`/`oem lock` with modified partitions (F-25).
+
+### R5. Rebuilding iOS afterwards
+- If HFS+ errors appear (`SWEET HFSINC`, daemons crash-looping): re-flash the root (docs/FAJITA.md "Known issues"). Leave iOS only with `sweetreboot fastboot`/`normal` after a flush.
+- Recovery boot-arg for the GPU inject: `sweetdenypath=/usr/local/lib/bgmtl/bgmtl-inject.dylib` (docs/FAJITA.md, INSTALL.md).
+
+## Items not covered or not verifiable here
+
+- `BOARD=fajita enxerto/build.sh` (needs `aarch64-linux-gnu-gcc`, `mkbootimg`, `cpio`; the stock DTB is a gitignored device dump) was not run; host tests and a clang cross-compile were (header of this file).
+- `charger.c` (611 lines), `pmic.c`, `charge_mode.c`, `usb_power.c`, `console.c`, `bootui.c`, `inflate.c`, `fdt.c` were only skimmed for interfaces; F-15 is therefore flagged, not proven.
+- Comparison with real iPhone11,8/D22AP ADTs and with other projects' ADTs (F-39) needs Apple artifacts that are not in this sandbox.
+- No hardware: every "lands in CrashDump" statement about Enxerto's own reset is INFERRED.
+
+## Sources
+
+- Repo: `docs/FAJITA.md`, `docs/BERGAMOTA_FASTBOOT.md`, `docs/BERGAMOTA_CHARGE.md`, `docs/REBOOT_MODE.md`, `docs/INSTALL.md`, `NOTES.md` (2026-11-03/04 entries), `enxerto/*`, `tools/mkadt.py`, `tools/mkpayload.py`.
+- Local read-only clones: UniXNU `docs/concepts/boot-chain.md`, `docs/drivers/darwin-boot.md`; ios-switch `shim-nx/README.md`, `docs/upstream/NOTES-sweet.md`.
+- Web: UBports forum "Restore Bricked OnePlus 6T on Linux" (https://forums.ubports.com/topic/5715/restore-bricked-oneplus-6t-on-linux); edk2-porting/WOA-Drivers issue 26 (https://www.github.com/edk2-porting/WOA-Drivers/issues/26);
+  Android `kernel/msm` `msm-poweroff.c` (https://android.googlesource.com/kernel/msm/+/a34dd933e47a58ae3569a59a854137683a62d7c1/drivers/power/reset/msm-poweroff.c);
+  mobile-nixos fajita page (https://mobile.nixos.org/devices/oneplus-fajita.html); search results for CrashDump exit, `fastboot boot` on the 6T and slot behaviour (XDA crDroid thread, Sailfish OS forum, crDroid/LineageOS install pages; snippets only).
