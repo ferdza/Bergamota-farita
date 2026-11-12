@@ -1,0 +1,198 @@
+diff --git a/bsd/dev/sweet_cpugov.h b/bsd/dev/sweet_cpugov.h
+new file mode 100644
+index 0000000..64c1709
+--- /dev/null
++++ b/bsd/dev/sweet_cpugov.h
+@@ -0,0 +1,192 @@
++/*
++ * Poco F1 (SDM845) CPU governor v2: the arithmetic, kept free of kernel types and MMIO so the same text is
++ * compiled by bsd/dev/sweet_cpufreq.c and by the host test (tools/test-cpugov.py runs gcc on it). The caller
++ * includes <stdint.h> (or the kernel's equivalent) first. Only integer maths, no loops over unbounded data.
++ *
++ * Model (written from the general idea of a utilisation-driven governor with a headroom factor, as used by
++ * schedulers that own the frequency decision; nothing here is copied code):
++ *   busy      fraction of a window one CPU was not idle, 0..CG_SCALE (1024 = the whole window)
++ *   inv       the same work expressed at the cluster's TOP frequency ("frequency invariant"): a CPU that was
++ *             100% busy at half speed has done half of the work it could do at the top state, so inv = 512.
++ *             inv = busy * avg_khz / top_khz, avg_khz = the clock the window actually ran at.
++ *   want_khz  headroom * inv * top_khz: the clock at which that work would take headroom_pct% of a window
++ *             busy (125 = 80% target utilisation).
++ *   index     the smallest LUT state at or above want_khz inside [lo, hi].
++ * Cluster utilisation is the MAX over its CPUs (one busy thread on a four CPU cluster must raise the cluster;
++ * the clocks of the cluster are shared), and a window's value is combined with the previous window's (max), so
++ * a frame that was busy 8 ms and then idle 8 ms keeps the clock for a frame period.
++ * Rate limits are asymmetric: raising is allowed at once (up_gap_ns apart at most), lowering only after the
++ * demand has stayed below the current state for down_hold_ns without a break.
++ */
++#ifndef SWEET_CPUGOV_H
++#define SWEET_CPUGOV_H
++
++#define CG_SCALE        1024u
++
++/* One CPU's busy fraction of a window, 0..CG_SCALE. idle may exceed wall slightly (reads are not simultaneous). */
++static inline uint32_t
++cg_busy(uint64_t wall, uint64_t idle)
++{
++	if (wall == 0 || idle >= wall) {
++		return 0;
++	}
++	return (uint32_t)(((wall - idle) * CG_SCALE) / wall);
++}
++
++/* Frequency of the window: the clock held at its start and at its end, averaged (a change in between is unseen). */
++static inline uint32_t
++cg_avg_khz(uint32_t start_khz, uint32_t end_khz)
++{
++	return (uint32_t)(((uint64_t)start_khz + end_khz) / 2);
++}
++
++/* busy -> work in units of the top state; rounded to nearest, never above CG_SCALE. */
++static inline uint32_t
++cg_inv_util(uint32_t busy, uint32_t avg_khz, uint32_t top_khz)
++{
++	if (top_khz == 0) {
++		return 0;
++	}
++	uint64_t v = ((uint64_t)busy * avg_khz + top_khz / 2) / top_khz;
++	return v > CG_SCALE ? CG_SCALE : (uint32_t)v;
++}
++
++/* Clock that serves inv with headroom_pct (125 = 25% spare). May exceed top_khz: the caller clamps by index. */
++static inline uint32_t
++cg_want_khz(uint32_t inv, uint32_t top_khz, uint32_t headroom_pct)
++{
++	uint64_t v = (uint64_t)inv * top_khz * headroom_pct / (100ull * CG_SCALE);
++	return v > 0xffffffffull ? 0xffffffffu : (uint32_t)v;
++}
++
++/* Smallest index in [lo, hi] whose clock is >= want_khz; hi if none. khz[] ascending, n entries. */
++static inline uint32_t
++cg_pick_idx(const uint32_t *khz, uint32_t n, uint32_t lo, uint32_t hi, uint32_t want_khz)
++{
++	if (n == 0) {
++		return 0;
++	}
++	if (hi >= n) {
++		hi = n - 1;
++	}
++	if (lo > hi) {
++		lo = hi;
++	}
++	uint32_t i = lo;
++	while (i < hi && khz[i] < want_khz) {
++		i++;
++	}
++	return i;
++}
++
++/*
++ * Target index for one cluster window.
++ *   busy_max   the busiest CPU's busy fraction this window (0..CG_SCALE)
++ *   inv_eff    max(inv of this window, inv of the previous one)
++ *   go_busy    busy_max at or above this (saturated: the real demand is unknown) jumps at least to hispeed_idx
++ *   lo, hi     floor and ceiling indexes (the result is inside; hi wins if lo > hi)
++ */
++static inline uint32_t
++cg_target_idx(const uint32_t *khz, uint32_t n, uint32_t lo, uint32_t hi, uint32_t busy_max, uint32_t inv_eff,
++    uint32_t headroom_pct, uint32_t go_busy, uint32_t hispeed_idx)
++{
++	if (n == 0) {
++		return 0;
++	}
++	uint32_t want = cg_want_khz(inv_eff, khz[n - 1], headroom_pct);
++	uint32_t idx = cg_pick_idx(khz, n, lo, hi, want);
++	if (busy_max >= go_busy && idx < hispeed_idx) {
++		idx = hispeed_idx;
++		if (idx > hi) {
++			idx = hi;
++		}
++		if (idx < lo) {
++			idx = lo;
++		}
++	}
++	return idx;
++}
++
++/*
++ * Rate limiter. last_ge_ns is the last time the demand (tgt) was at or above the current state; last_change_ns
++ * the time of the last request. Returns the index to request now (cur = no change). Up: at once, but not
++ * within up_gap_ns of the previous request (0 = no limit). Down: only once demand has been below cur for
++ * down_hold_ns without interruption; then straight to tgt.
++ */
++static inline uint32_t
++cg_step(uint32_t cur, uint32_t tgt, uint64_t now_ns, uint64_t *last_ge_ns, uint64_t last_change_ns,
++    uint64_t up_gap_ns, uint64_t down_hold_ns)
++{
++	if (tgt >= cur) {
++		*last_ge_ns = now_ns;
++		if (tgt > cur && now_ns - last_change_ns >= up_gap_ns) {
++			return tgt;
++		}
++		return cur;
++	}
++	if (now_ns - *last_ge_ns >= down_hold_ns) {
++		return tgt;
++	}
++	return cur;
++}
++
++/*
++ * Boost floor with decay. A boost holds boost_idx until until_ns, then gives up one state per decay_ns (0 =
++ * drops at once). until_ns == 0 means no boost has happened. Returns the floor index for now_ns.
++ */
++static inline uint32_t
++cg_floor_idx(uint32_t boost_idx, uint64_t until_ns, uint64_t now_ns, uint64_t decay_ns)
++{
++	if (until_ns == 0) {
++		return 0;
++	}
++	if (now_ns < until_ns) {
++		return boost_idx;
++	}
++	if (decay_ns == 0) {
++		return 0;
++	}
++	uint64_t steps = (now_ns - until_ns) / decay_ns;
++	return steps >= boost_idx ? 0 : boost_idx - (uint32_t)steps;
++}
++
++/*
++ * Little-cluster ceiling lift (the A55 cap). State is kept by the caller; lifted = 1 means the ceiling is the
++ * lifted one. Lift when the cluster is saturated at its current ceiling and either a hint says interactive work
++ * is spilling onto it (A75 busy, touch active), at once, or the saturation has lasted sat_need_ns. Drop after
++ * calm_need_ns with the busiest CPU below calm_busy and no hint. dt_ns is the window length.
++ */
++struct cg_lift {
++	uint32_t lifted;
++	uint64_t sat_ns;
++	uint64_t calm_ns;
++};
++
++static inline uint32_t
++cg_lift_update(struct cg_lift *s, uint32_t busy_max, uint32_t at_ceiling, uint32_t hint, uint64_t dt_ns,
++    uint32_t sat_busy, uint64_t sat_need_ns, uint32_t calm_busy, uint64_t calm_need_ns)
++{
++	if (busy_max >= sat_busy && at_ceiling) {
++		s->calm_ns = 0;
++		s->sat_ns += dt_ns;
++		if (!s->lifted && (hint || s->sat_ns >= sat_need_ns)) {
++			s->lifted = 1;
++		}
++		return s->lifted;
++	}
++	s->sat_ns = 0;
++	if (s->lifted) {
++		if (busy_max < calm_busy && !hint) {
++			s->calm_ns += dt_ns;
++			if (s->calm_ns >= calm_need_ns) {
++				s->lifted = 0;
++				s->calm_ns = 0;
++			}
++		} else {
++			s->calm_ns = 0;
++		}
++	}
++	return s->lifted;
++}
++
++#endif /* SWEET_CPUGOV_H */

@@ -1,0 +1,293 @@
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+index 68cf74a..6a2179d 100644
+--- a/bsd/dev/sweet_cpufreq.c
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -60,6 +60,17 @@
+  *                                      falls back to its base cap / boost ceiling in one step and the
+  *                                      governor takes over. The GPU half is sweetgpuinput= /
+  *                                      sweetgpuinputms= in sweet_a630.c.
++ *   sweetcpugov=1|2                    gov: 2 (default) = governor v2 (patches 0268-0271, docs/CPU_GOVERNOR.md): windows
++ *                                      of sweetcpugov_ms (8) of per-CPU busy time, frequency invariant, max over the
++ *                                      cluster's CPUs, 25% headroom, instant up / sweetcpugov_down_ms (48) hold-down;
++ *                                      1 = the original 25 ms policy of patches 0190-0258 (the rollback)
++ *   sweetcpugov_ms=<4..50>             v2 window (default 8)
++ *   sweetcpugov_headroom=<100..200>    v2 percent of spare clock over the measured work (default 125)
++ *   sweetcpugov_go=<50..100>           v2 busy % of the busiest CPU that counts as saturated (default 85): jump to
++ *                                      the hispeed state, not a 25% step
++ *   sweetcpugov_down_ms=<0..2000>      v2 hold-down: demand must stay below the clock this long (default 48)
++ *   sweetcpugov_hispeed_big=<10..100>  v2 A75 jump target for a saturated window, % of max (default 50)
++ *   sweetcpugov_hispeed_little=<10..100>  same for the A55 (default 50, never above its ceiling)
+  *   sweetamp=0|1                       idle-core steering in the scheduler (default 1)
+  *   sweetamp_prio=<n>                  base_pri threshold (default 31)
+  * Core-class steering (independent of the cpufreq mode): once all CPUs are up,
+@@ -87,6 +98,11 @@
+  * idx/cur_khz are read live from PERF_STATE; they are 0 unless state=applied.
+  * Line 1 also carries input=<on|off> input_khz=<A55 touch ceiling> input_ms=<hold> input_boosts=<touch events
+  * accepted by sweet_input_boost(), at most one per 10 ms> input_boosted=<1 while the hold is running>.
++ * Added by governor v2 (patch 0269), appended at the end of the existing lines: line 1 gov=<1|2> gov_ms=<window>
++ * headroom=<pct> down_ms=<hold> samples=<governor windows> late=<windows longer than twice the period>
++ * win_max_us=<longest window>; cluster lines busy_max=<busiest CPU %, last window> busy_avg=<mean of the CPUs %>
++ * inv=<frequency invariant work of the busiest CPU, % of the cluster top clock> hispeed_khz=<saturation jump>
++ * ups=<raises> downs=<lowerings> holds=<windows in which a lowering was held back>.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -99,6 +115,7 @@
+ #include <arm/cpu_topology.h>
+ #include <pexpert/pexpert.h>
+ #include "sweet_board.h"
++#include "sweet_cpugov.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern uint64_t sweet_processor_idle_time(int cpu);
+@@ -154,6 +171,13 @@ static struct cf_domain {
+ 	uint32_t load;                  /* last load, % */
+ 	uint32_t changes;
+ 	uint32_t down_cnt;
++	/* governor v2 */
++	uint32_t g2_hispeed;            /* LUT index a saturated window jumps to */
++	uint32_t g2_win_idx;            /* the state held at the start of the current window */
++	uint32_t g2_prev_inv;           /* last window's invariant utilisation (CG_SCALE units) */
++	uint32_t g2_busy_max, g2_busy_avg, g2_inv;
++	uint32_t g2_ups, g2_downs, g2_holds;
++	uint64_t g2_last_ge_ns, g2_last_change_ns;
+ 	uint32_t khz[CPUFREQ_LUT_MAX];
+ 	uint64_t tis_ns[CPUFREQ_LUT_MAX];
+ 	uint64_t tis_snap[CPUFREQ_LUT_MAX];
+@@ -173,6 +197,15 @@ static int cf_offcap = 1;
+ static uint64_t cf_off_since;
+ extern int sweet_display_off;           /* sweet_fb.c */
+ static unsigned cf_ncpus;
++/* Governor v2 (patches 0268-0271); sweetcpugov=1 selects the original policy. */
++static int cf_gov_ver = 2;
++static uint32_t cf_g2_ms = 8;
++static uint32_t cf_g2_headroom = 125;
++static uint32_t cf_g2_go_pct = 85;
++static uint32_t cf_g2_down_ms = 48;
++static uint32_t cf_g2_hi_big = 50;
++static uint32_t cf_g2_hi_little = 50;
++static uint32_t cf_g2_samples, cf_g2_late, cf_g2_win_max_us;
+ static unsigned cf_log_secs = 10;
+ static int cf_force;
+ static int cf_boost = 1;      /* 0247: on by default (sweetcpufreq_little_boost=0 turns it off) */
+@@ -345,6 +378,8 @@ cf_setup(unsigned id, struct cf_domain *d)
+ 	if (d->boost_top < d->cap) {
+ 		d->boost_top = d->cap;
+ 	}
++	d->g2_hispeed = cf_pick(d, (int)(id == 1 ? cf_g2_hi_big : cf_g2_hi_little));
++	d->g2_win_idx = d->cap;
+ 	cf_request(d, d->cap);
+ 	d->changes = 0;
+ 	cf_readback(id, d, d->cap);
+@@ -473,6 +508,105 @@ cf_gov_step(unsigned id, struct cf_domain *d, uint64_t wall)
+ 	}
+ }
+ 
++/*
++ * Governor v2 window: per CPU busy fraction since the last call (wall and idle in the same mach units). The cluster
++ * value is the busiest CPU (one busy thread must be able to raise a four CPU cluster), the mean is only reported.
++ */
++static void
++cf_cluster_busy(struct cf_domain *d, uint64_t wall, uint32_t *bmax, uint32_t *bavg)
++{
++	uint32_t worst = 0, seen = 0;
++	uint64_t sum = 0;
++
++	for (unsigned k = 0; k < d->ncpu && d->first_cpu + k < cf_ncpus; k++) {
++		uint64_t idle = sweet_processor_idle_time((int)(d->first_cpu + k));
++		if (idle == ~0ULL) {
++			continue;
++		}
++		uint32_t busy = cg_busy(wall, idle - d->prev_idle[k]);
++		d->prev_idle[k] = idle;
++		sum += busy;
++		seen++;
++		if (busy > worst) {
++			worst = busy;
++		}
++	}
++	*bmax = worst;
++	*bavg = seen ? (uint32_t)(sum / seen) : 0;
++}
++
++static void
++cf_gov2_step(unsigned id, struct cf_domain *d, uint64_t wall, uint64_t now_ns)
++{
++	uint32_t cur = cf_rd(d, CPUFREQ_PERF_STATE);
++	if (cur >= d->n) {
++		cur = d->req < d->n ? d->req : 0;
++	}
++	uint32_t bmax, bavg;
++	cf_cluster_busy(d, wall, &bmax, &bavg);
++	uint32_t start = d->g2_win_idx < d->n ? d->g2_win_idx : cur;
++	uint32_t inv = cg_inv_util(bmax, cg_avg_khz(d->khz[start], d->khz[cur]), d->khz[d->top]);
++	uint32_t inv_eff = inv > d->g2_prev_inv ? inv : d->g2_prev_inv;     /* a frame period of memory */
++	d->g2_prev_inv = inv;
++	d->g2_busy_max = bmax;
++	d->g2_busy_avg = bavg;
++	d->g2_inv = inv;
++	d->load = (bmax * 100 + CG_SCALE / 2) / CG_SCALE;
++	if (cf_mode != MODE_GOV) {
++		d->g2_win_idx = cur;
++		return;
++	}
++	/* Touch boost (patch 0217): the floor is in_idx while the hold runs, the ceiling at least that. */
++	bool in_act = cf_in_khz && mach_absolute_time() < cf_in_until;
++	uint32_t hi = d->eff_cap, lo = 0;
++	if (in_act && d->in_idx > hi) {
++		hi = d->in_idx;
++	}
++	if (in_act) {
++		lo = d->in_idx;
++	}
++	d->in_on = in_act;
++	if (cf_offcap && __atomic_load_n(&sweet_display_off, __ATOMIC_ACQUIRE)) {
++		uint64_t five;
++		nanoseconds_to_absolutetime(5 * NSEC_PER_SEC, &five);
++		uint64_t now = mach_absolute_time();
++		if (cf_off_since == 0) {
++			cf_off_since = now;
++		}
++		if (now - cf_off_since >= five && !in_act) {
++			if (cur != 0) {
++				cf_request(d, 0);       /* 0258: display off, lowest state */
++			}
++			d->g2_win_idx = 0;
++			return;
++		}
++	} else if (id == 1) {
++		cf_off_since = 0;
++	}
++	if (cur > hi) {                         /* a lowered ceiling applies at once */
++		cf_request(d, hi);
++		d->g2_downs++;
++		cur = hi;
++	}
++	uint32_t tgt = cg_target_idx(d->khz, d->n, lo, hi, bmax, inv_eff, cf_g2_headroom,
++	    (cf_g2_go_pct * CG_SCALE) / 100, d->g2_hispeed);
++	uint32_t next = cg_step(cur, tgt, now_ns, &d->g2_last_ge_ns, d->g2_last_change_ns, 0,
++	    (uint64_t)cf_g2_down_ms * NSEC_PER_MSEC);
++	if (next != cur) {
++		if (next > cur) {
++			d->g2_ups++;
++		} else {
++			d->g2_downs++;
++		}
++		cf_request(d, next);
++		d->g2_last_change_ns = now_ns;
++		cur = next;
++	} else if (tgt < cur) {
++		d->g2_holds++;
++	}
++	d->g2_win_idx = cur;
++}
++
+ /*
+  * Touch boost entry point, called by the touch driver for every touch-down and move report (bsd/dev/sweet_touch.c,
+  * touch_report(), on the touch thread). Cheap: with sweetinputboost=0 or before init one load; otherwise one clock read
+@@ -588,8 +722,12 @@ cf_thread(void *arg __unused, wait_result_t wr __unused)
+ 	}
+ 
+ 	/* Accounting loop (also in fixed mode, slower): time-in-state, load, governor. */
+-	unsigned period = cf_mode == MODE_GOV ? GOV_PERIOD_MS : FIXED_PERIOD_MS;
++	unsigned period = cf_mode == MODE_GOV ? (cf_gov_ver == 2 ? cf_g2_ms : GOV_PERIOD_MS) : FIXED_PERIOD_MS;
+ 	uint64_t last = mach_absolute_time(), last_log = last;
++	if (cf_mode == MODE_GOV && cf_gov_ver == 2) {
++		printf("SWEET CPUFREQ: governor v2: window %u ms, headroom %u%%, saturated at %u%% busy, hold-down %u ms\n",
++		    cf_g2_ms, cf_g2_headroom, cf_g2_go_pct, cf_g2_down_ms);
++	}
+ 	for (unsigned i = 0; i < 2; i++) {
+ 		(void)cf_cluster_load(&cf_dom[i], 1);   /* prime prev_idle */
+ 	}
+@@ -599,16 +737,32 @@ cf_thread(void *arg __unused, wait_result_t wr __unused)
+ 		uint64_t wall = now - last, wall_ns;
+ 		last = now;
+ 		absolutetime_to_nanoseconds(wall, &wall_ns);
++		uint64_t now_ns;
++		absolutetime_to_nanoseconds(now, &now_ns);
++		cf_g2_samples++;
++		if (wall_ns > 2ull * period * NSEC_PER_MSEC) {
++			cf_g2_late++;
++		}
++		if (wall_ns / 1000 > cf_g2_win_max_us) {
++			cf_g2_win_max_us = (uint32_t)MIN(wall_ns / 1000, 0xffffffffull);
++		}
+ 		for (unsigned i = 0; i < 2; i++) {
+ 			struct cf_domain *d = &cf_dom[i];
+ 			if (d->state != CF_APPLIED) {
+ 				continue;
+ 			}
+ 			uint32_t cur = cf_rd(d, CPUFREQ_PERF_STATE);
++			if (cf_mode == MODE_GOV && cf_gov_ver == 2 && d->g2_win_idx < d->n) {
++				cur = d->g2_win_idx;            /* v2: the state held at the start of this window */
++			}
+ 			if (cur < d->n) {
+ 				d->tis_ns[cur] += wall_ns;      /* the state held during this interval */
+ 			}
+-			cf_gov_step(i, d, wall);
++			if (cf_mode == MODE_GOV && cf_gov_ver == 2) {
++				cf_gov2_step(i, d, wall, now_ns);
++			} else {
++				cf_gov_step(i, d, wall);
++			}
+ 		}
+ 		uint64_t since_log_ns;
+ 		absolutetime_to_nanoseconds(now - last_log, &since_log_ns);
+@@ -694,6 +848,22 @@ sweet_cpufreq_max(void)
+ 	(void)PE_parse_boot_argn("sweetcpufreq_little_boost", &cf_boost, sizeof(cf_boost));
+ 	(void)PE_parse_boot_argn("sweetcpufreq_offcap", &cf_offcap, sizeof(cf_offcap));
+ 	cf_boost_pct = cf_percent_arg("sweetcpufreq_little_boost_max", 100);
++	{
++		int g = 2, ms = 8, hr = 125, go = 85, dn = 48;
++
++		(void)PE_parse_boot_argn("sweetcpugov", &g, sizeof(g));
++		(void)PE_parse_boot_argn("sweetcpugov_ms", &ms, sizeof(ms));
++		(void)PE_parse_boot_argn("sweetcpugov_headroom", &hr, sizeof(hr));
++		(void)PE_parse_boot_argn("sweetcpugov_go", &go, sizeof(go));
++		(void)PE_parse_boot_argn("sweetcpugov_down_ms", &dn, sizeof(dn));
++		cf_gov_ver = g == 1 ? 1 : 2;
++		cf_g2_ms = (uint32_t)(ms < 4 ? 8 : MIN(ms, 50));
++		cf_g2_headroom = (uint32_t)(hr < 100 || hr > 200 ? 125 : hr);
++		cf_g2_go_pct = (uint32_t)(go < 50 || go > 100 ? 85 : go);
++		cf_g2_down_ms = (uint32_t)(dn < 0 || dn > 2000 ? 48 : dn);
++		cf_g2_hi_big = (uint32_t)cf_percent_arg("sweetcpugov_hispeed_big", 50);
++		cf_g2_hi_little = (uint32_t)cf_percent_arg("sweetcpugov_hispeed_little", 50);
++	}
+ start:
+ 	if (kernel_thread_start((thread_continue_t)cf_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+@@ -721,16 +891,18 @@ static int
+ cf_sysctl SYSCTL_HANDLER_ARGS
+ {
+ #pragma unused(arg1, arg2)
+-	char buf[2048];
++	char buf[3072];
+ 	size_t n = 0;
+ 	const char *modes[] = { "off", "gov", "fixed" };
+ 
+ 	n = cf_cat(buf, sizeof(buf), n, "sweet_cpufreq v1 mode=%s period_ms=%u amp=%s amp_big=0x%llx amp_pri=%d "
+-	    "input=%s input_khz=%u input_ms=%u input_boosts=%u input_boosted=%u\n",
+-	    modes[cf_mode], cf_mode == MODE_GOV ? GOV_PERIOD_MS : FIXED_PERIOD_MS,
++	    "input=%s input_khz=%u input_ms=%u input_boosts=%u input_boosted=%u "
++	    "gov=%d gov_ms=%u headroom=%u down_ms=%u samples=%u late=%u win_max_us=%u\n",
++	    modes[cf_mode], cf_mode != MODE_GOV ? FIXED_PERIOD_MS : cf_gov_ver == 2 ? cf_g2_ms : GOV_PERIOD_MS,
+ 	    cf_amp_on ? "on" : "off", cf_amp_big, cf_amp_pri,
+ 	    cf_in_hold_abs ? "on" : "off", cf_in_khz, cf_in_ms, cf_in_events,
+-	    (unsigned)(cf_in_hold_abs && mach_absolute_time() < cf_in_until));
++	    (unsigned)(cf_in_hold_abs && mach_absolute_time() < cf_in_until),
++	    cf_gov_ver, cf_g2_ms, cf_g2_headroom, cf_g2_down_ms, cf_g2_samples, cf_g2_late, cf_g2_win_max_us);
+ 	for (unsigned i = 0; i < 2; i++) {
+ 		const struct cf_domain *d = &cf_dom[i];
+ 		const char *st = d->state == CF_OFF ? "off" : d->state == CF_PENDING ? "pending" :
+@@ -750,7 +922,10 @@ cf_sysctl SYSCTL_HANDLER_ARGS
+ 			n = cf_cat(buf, sizeof(buf), n, "%s%u:%llu", k ? "," : "", d->khz[k],
+ 			    d->tis_ns[k] / NSEC_PER_MSEC);
+ 		}
+-		n = cf_cat(buf, sizeof(buf), n, "\n");
++		n = cf_cat(buf, sizeof(buf), n, " busy_max=%u busy_avg=%u inv=%u hispeed_khz=%u ups=%u downs=%u holds=%u\n",
++		    (d->g2_busy_max * 100 + CG_SCALE / 2) / CG_SCALE, (d->g2_busy_avg * 100 + CG_SCALE / 2) / CG_SCALE,
++		    (d->g2_inv * 100 + CG_SCALE / 2) / CG_SCALE, ok ? cf_state_khz(d, d->g2_hispeed) : 0,
++		    d->g2_ups, d->g2_downs, d->g2_holds);
+ 	}
+ 	return sysctl_handle_string(oidp, buf, sizeof(buf), req);
+ }
