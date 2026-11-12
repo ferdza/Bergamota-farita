@@ -1,0 +1,63 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 97ca307..715e96c 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -295,6 +295,9 @@ enum { CC_AHB, CC_CX_GMU, CC_CXO, CC_CX_SNOC_DVM, CC_CX_APB, CC_CXO_AON, CC_GX_G
+ #define A6XX_TPL1_ADDR_MODE_CNTL 0xb601
+ #define A6XX_HLSQ_ADDR_MODE_CNTL 0xbe05
+ #define A6XX_VBIF_GATE_OFF_WRREQ_EN 0x302a
++#define A6XX_VBIF_XIN_HALT_CTRL0 0x3080       /* 0280: Mesa a6xx.xml, as the Linux a6xx_bus_clear_pending_transactions uses them */
++#define A6XX_VBIF_XIN_HALT_CTRL1 0x3081
++#define VBIF_XIN_HALT_MASK      0xfu
+ #define A630_GMU_CHIPID         0x06030100u     /* chip id 0x06030001, minor/patch packed as the GMU wants */
+ 
+ /* ------------------------------------------------------------------ */
+@@ -3421,11 +3424,40 @@ gpu_cp_idle_now(void)
+ 	return gpu_r(A6XX_CP_RB_RPTR) == ring_wptr && sweet_gpu_fence_done(a630_dev.seqno);
+ }
+ 
++/*
++ * 0280: halt the VBIF clients and wait for their acks before GX goes down (Linux a6xx_gmu_shutdown -> bus_halt =
++ * a6xx_bus_clear_pending_transactions, a630 has VBIF, not GBIF: XIN_HALT_CTRL0 = 0xf, poll CTRL1 for 0xf, then 0).
++ * We powered GX down with whatever the GPU still had in flight on the bus; collapsing a power domain under an open bus
++ * transaction is a classic Qualcomm full-SoC hang (no abort, no log). Lock held, GX on.
++ */
++static void
++gpu_vbif_halt(const char *why)
++{
++	static unsigned logged;
++	unsigned i;
++
++	gpu_w(A6XX_VBIF_XIN_HALT_CTRL0, VBIF_XIN_HALT_MASK);
++	for (i = 0; i < 2000; i++) {
++		if ((gpu_r(A6XX_VBIF_XIN_HALT_CTRL1) & VBIF_XIN_HALT_MASK) == VBIF_XIN_HALT_MASK) {
++			break;
++		}
++		delay(10);
++	}
++	if (i == 2000) {
++		printf("SWEET GPU: VBIF halt (%s): no ack after 20 ms (CTRL1 %#x)\n", why, gpu_r(A6XX_VBIF_XIN_HALT_CTRL1));
++	} else if (logged < 3) {
++		logged++;
++		printf("SWEET GPU: VBIF halt (%s): acked after %u us\n", why, i * 10);
++	}
++	gpu_w(A6XX_VBIF_XIN_HALT_CTRL0, 0);
++}
++
+ /* GX off through the GMU, then the GMU into reset (the stage-5 end, hardware verified). Lock held, GPU awake. */
+ static bool
+ gpu_suspend(bool quiet)
+ {
+ 	a630_quiet = quiet;
++	gpu_vbif_halt("suspend");
+ 	gpu_wr(gmu, GMU_PWR_COL_KEEPALIVE, 0);
+ 	gmu_oob_clear(OOB_GPU);
+ 	gpu_gx_slumber();
+@@ -3513,6 +3545,7 @@ sweet_gpu_recover(const char *why)
+ 		uint32_t gx = gpu_rd(cc, GPUCC_GX_GDSCR);
+ 		if ((gx & GDSC_PWR_ON) && !(gpu_rd(cc, gpucc_cbcr[CC_GX_GFX3D].off) & CBCR_CLK_OFF)) {
+ 			gpu_w(A6XX_CP_SQE_CNTL, 3);     /* halt the SQE first (Linux a6xx_recover) */
++			gpu_vbif_halt("recovery");
+ 		}
+ 		gpu_wr(gmu, GMU_PWR_COL_KEEPALIVE, 0);
+ 		gmu_oob_clear(OOB_GPU);
