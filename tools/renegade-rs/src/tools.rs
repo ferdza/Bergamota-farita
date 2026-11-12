@@ -29,6 +29,13 @@ const BGL_DIR: &str = "usr/local/lib/bergamota-gl";
 const BGL_LAUNCH: &str = "/usr/local/lib/bergamota-gl/bgl-launch";
 const BACKBOARDD_LABEL: &str = "com.apple.backboardd";
 const BACKBOARDD_PATH: &str = "/usr/libexec/backboardd";
+/// Chlorophyll (the GPU userland), shipped in the bundle as `bgmtl/<file>`; laid out on the phone like chlorophyll-ios18.zip.
+const BGMTL_FILES: [&str; 3] = ["bgmtl-inject.dylib", "libchlorophyll.dylib", "libdrm.2.dylib"];
+const BGMTL_DIR: &str = "usr/local/lib/bgmtl";
+const BGMTL_INJECT: &str = "/usr/local/lib/bgmtl/bgmtl-inject.dylib";
+/// iOS 26 kept a short name for binaries with little header slack: a symlink to the inject.
+const BGMTL_SHORT: &str = "/usr/local/bgi.dylib";
+const BGMTL_FLAGS: &str = "private/var/tmp";
 const TOYBOX_CONFIG: &str = include_str!("../../ssh/toybox.config");
 
 /// The files of berga-tools.zip the tweaks use, by their path in the zip ("ssh/dropbear", "sweetnet/hcitest", ...).
@@ -38,7 +45,7 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// Reads the bundle, keeping `ssh/`, `sweetnet/` and `bergamota-gl/` and checking each file's SHA-256 against
+    /// Reads the bundle, keeping `ssh/`, `sweetnet/`, `bergamota-gl/` and `bgmtl/` and checking each file's SHA-256 against
     /// `berga-tools.json`. A file the manifest does not list, or lists differently, is an error.
     pub fn from_zip(src: Src) -> Result<Self> {
         let zip = Zip::open(src)?;
@@ -55,7 +62,7 @@ impl Tools {
         }
         let mut files = BTreeMap::new();
         for e in &zip.entries {
-            if !(e.name.starts_with("ssh/") || e.name.starts_with("sweetnet/") || e.name.starts_with("bergamota-gl/")) || e.name.ends_with('/') {
+            if !(["ssh/", "sweetnet/", "bergamota-gl/", "bgmtl/"].iter().any(|x| e.name.starts_with(x))) || e.name.ends_with('/') {
                 continue;
             }
             let data = zip.read_all(e)?;
@@ -460,6 +467,76 @@ fn firstboot(fs: &mut dyn Fs, log: &mut Log, t: &Tools) -> Result<()> {
     Ok(())
 }
 
+/// Chlorophyll on by default: the GPU userland goes into the root and backboardd links the inject (iOS 26's "direct
+/// mode"), so the phone composites on the Adreno 630 from the first boot with nothing to switch on. Safe by construction:
+/// the link is weak (dyld starts backboardd without the inject when it is missing or hidden by the kernel's
+/// `sweetdenypath` boot-arg), the original binary is kept as `backboardd.orig`, and at every start the inject checks
+/// `bgmtl-bb.off` (kill switch, also written by its own dead-man), the kernel's GPU state (`sweetgpu=8`) and that it can
+/// make the device; otherwise backboardd runs stock. Nothing is changed when any file is missing or the link fails.
+fn chlorophyll(fs: &mut dyn Fs, log: &mut Log, t: &Tools) -> Result<()> {
+    chlorophyll_at(fs, log, t, BGMTL_INJECT, BGMTL_SHORT)
+}
+
+#[doc(hidden)]
+pub fn chlorophyll_at(fs: &mut dyn Fs, log: &mut Log, t: &Tools, inject: &str, short: &str) -> Result<()> {
+    let missing: Vec<&str> = BGMTL_FILES.iter().copied().filter(|f| t.get(&format!("bgmtl/{f}")).is_none()).collect();
+    if !missing.is_empty() {
+        log.push(format!("chlorophyll: not in the tools bundle ({}): backboardd stays on the CPU renderer", missing.join(", ")));
+        return Ok(());
+    }
+    let bb = BACKBOARDD_PATH.trim_start_matches('/');
+    if !fs.exists(bb) {
+        log.push(format!("chlorophyll: no /{bb} in the image: skipped"));
+        return Ok(());
+    }
+    let orig = format!("{bb}.orig");
+    // wire from the pristine binary when a previous run kept it
+    let bin = if fs.exists(&orig) { fs.read(&orig)? } else { fs.read(bb)? };
+    let linked = match crate::tools::link_dylib(&bin, inject, true) {
+        Ok(b) => Ok((b, inject.to_string())),
+        Err(e) if e.to_string().contains("no slack") => crate::tools::link_dylib(&bin, short, true).map(|b| (b, short.to_string())),
+        Err(e) => Err(e),
+    };
+    let (signed, lib) = match linked {
+        Ok(v) => v,
+        Err(e) => {
+            log.push(format!("chlorophyll: backboardd left stock ({e})"));
+            return Ok(());
+        }
+    };
+    // the libraries first: a weak load command tolerates a missing library, a missing library is never the other way round
+    fs.makedirs(BGMTL_DIR)?;
+    fs.chown(BGMTL_DIR, 0, 0);
+    fs.chmod(BGMTL_DIR, 0o755)?;
+    for f in BGMTL_FILES {
+        install(fs, t.get(&format!("bgmtl/{f}")).unwrap(), &format!("{BGMTL_DIR}/{f}"), 0o755)?;
+    }
+    if lib != inject {
+        let l = lib.trim_start_matches('/');
+        if fs.exists(l) {
+            fs.remove(l)?;
+        }
+        fs.symlink(inject, l)?;
+    }
+    if !fs.exists(&orig) {
+        install(fs, &bin, &orig, 0o755)?;
+    }
+    install(fs, &signed, bb, 0o755)?;
+    fs.makedirs(BGMTL_FLAGS)?;
+    for f in ["bgmtl-bb.off", "bgmtl-bb.state"] {
+        let p = format!("{BGMTL_FLAGS}/{f}");
+        if fs.exists(&p) {
+            fs.remove(&p)?;
+        }
+    }
+    fs.write(&format!("{BGMTL_FLAGS}/bgmtl-bb.arm"), b"armed by the install (default)\n")?;
+    fs.write(&format!("{BGMTL_FLAGS}/bgmtl-bb.direct"), b"")?;
+    log.push(format!(
+        "chlorophyll: libraries in /{BGMTL_DIR}; backboardd links {lib} (weak, original kept as /{orig}), armed in direct mode (GPU only while the kernel runs sweetgpu=8; kill switch /{BGMTL_FLAGS}/bgmtl-bb.off)"
+    ));
+    Ok(())
+}
+
 /// bglrender(): the GL renderer payload and backboardd's job starting bgl-launch (inert without the boot-arg).
 fn bglrender(fs: &mut dyn Fs, log: &mut Log, t: &Tools) -> Result<()> {
     if !BGL_FILES.iter().all(|f| t.get(&format!("bergamota-gl/{f}")).is_some()) {
@@ -571,6 +648,7 @@ pub fn run_rest(fs: &mut dyn Fs, cfg: &Config, log: &mut Log) -> Result<()> {
     posterboard(fs, log, t)?;
     firstboot(fs, log, t)?;
     bglrender(fs, log, t)?;
+    chlorophyll(fs, log, t)?;
     sweetprefs_tools(fs, log, t)?;
     console_job(fs, log)
 }

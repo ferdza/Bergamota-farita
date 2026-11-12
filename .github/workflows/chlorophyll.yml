@@ -7,12 +7,18 @@ name: chlorophyll (iOS 18, Turnip)
 on:
   workflow_dispatch:
     inputs:
+      publish:
+        description: Publish the zip as the chlorophyll-ios18 release of this repository (the web installer adds it to the root by default)
+        default: "true"
       chlorophyll_ref:
         description: Chlorophyll branch, tag or commit
         default: ios26
       xcode_version:
         description: Xcode on the runner (empty = the newest; Chlorophyll's Metal device needs the iOS 26 SDK, binaries still target iOS 18.0)
         default: ""
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -96,3 +102,15 @@ jobs:
           name: chlorophyll-ios18
           path: work/chlorophyll-ios18.zip
           retention-days: 30
+
+      # The web installer (pages.yml) merges this release into berga-tools.zip, so Renegade puts Chlorophyll in the root and
+      # wires backboardd on the GPU with nothing to switch on. Nothing from Apple or Qualcomm is in the zip (BUILD.txt).
+      - name: Publish release chlorophyll-ios18
+        if: ${{ inputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="Chlorophyll $(git -C "$WORK/chlorophyll" rev-parse --short HEAD) (${{ inputs.chlorophyll_ref }}), run ${{ github.run_id }}. Built from source; no Apple or Qualcomm files."
+          gh release view chlorophyll-ios18 >/dev/null 2>&1 || gh release create chlorophyll-ios18 --title "Chlorophyll for iOS 18 (GPU userland)" --notes "$NOTES"
+          gh release edit chlorophyll-ios18 --notes "$NOTES"
+          gh release upload chlorophyll-ios18 "$WORK/chlorophyll-ios18.zip" --clobber

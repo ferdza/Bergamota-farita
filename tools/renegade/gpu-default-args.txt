@@ -1,4 +1,5 @@
-# Boot-args appended to tools/renegade/mkboot-full.sh's CMDLINE for the OnePlus 6T daily image (2026-11-04).
+# Boot-args appended BY DEFAULT to tools/renegade/mkboot-full.sh's CMDLINE on both SDM845 boards (beryllium, fajita): the GPU is
+# on from the first boot, nothing to enable (GPU=0 leaves it out). Was fajita-daily-args.txt (2026-11-04).
 # GPU on (stage 8) with the governor, interactive boost, hardware clock gating and idle slumber (docs/GPU_KERNEL.md);
 # framebuffer in direct mode with the GPU scan-out copy (no flicker with Chlorophyll, docs/FAJITA.md "The GPU");
 # the page's own USB link (kernel 0256/0257); debug traces off (sweetsyserr=- : no per-syscall error lines, sweetiolog=- :

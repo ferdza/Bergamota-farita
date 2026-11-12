@@ -12,6 +12,8 @@ on:
     paths:
       - "apps/web/**"
       - "tools/renegade-wasm/**"
+      - "tools/renegade-rs/**"
+      - "tools/berga-tools/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -47,6 +49,20 @@ jobs:
         run: |
           bash scripts/fetch-tools.sh
           ls -l public/tools/
+      # The GPU on by default: Chlorophyll (release chlorophyll-ios18 of this repository, built by chlorophyll.yml) goes into
+      # the bundle as bgmtl/*, so the patched root has the Metal driver and backboardd wired to it. Without that release the
+      # root is built without the GPU userland (Renegade logs it) and the page still works.
+      - name: Add Chlorophyll (GPU 3D by default) to berga-tools
+        working-directory: apps/web
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/chl"
+          if gh release download chlorophyll-ios18 -R "${{ github.repository }}" -p chlorophyll-ios18.zip -D "$RUNNER_TEMP/chl" --clobber; then
+            python3 ../../tools/berga-tools/add-chlorophyll.py public/tools/berga-tools.zip "$RUNNER_TEMP/chl/chlorophyll-ios18.zip"
+          else
+            echo "::warning::no chlorophyll-ios18 release yet (run the chlorophyll workflow): the root will have no GPU userland"
+          fi
       - name: Build (base = /${{ github.event.repository.name }}/)
         working-directory: apps/web
         env:

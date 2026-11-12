@@ -33,6 +33,9 @@ Fajita-only code tests `sweet_board_fajita()` **before** `sweet_board_beryllium(
 
 ## Build the boot image (Linux, no Mac)
 
+> **Short path:** `tools/install/build-boot.sh fajita` does steps 2-5 below and puts the GPU on by default; the whole protocol is in
+> [INSTALL.md](INSTALL.md). The manual steps stay here for reference.
+
 1. **DTB.** Take the stock `boot.img` of your 6T, extract the appended DTBs and keep the SDM845 v2.1 one
    (`msm-id 0x141/0x20001`) as `dtb/fajita/dtb` (gitignored: a device dump). The 6T's `boot.img` carries 3 SoC
    FDTs (v2.1/v2/v1); fdt0 = v2.1, 371 561 bytes.
@@ -91,8 +94,9 @@ The phone appears as `1209:0001` "Sweet iOS (USB Ethernet)"; the host side MAC i
 The Adreno 630 of the 6T runs the whole stack of the Poco F1: `sweetgpu=8` brings it up (the OnePlus TrustZone accepts
 the OnePlus 6 `a630_zap` from postmarketOS `firmware-oneplus-sdm845`, split with `tools/split-mbn.py` and put in the ADT
 by `tools/mkadt.py --gpu-fw`; never commit or publish that ADT or the images built from it). Chlorophyll comes from
-`.github/workflows/chlorophyll.yml` (artifact `chlorophyll-ios18.zip`) and is installed and wired into backboardd from the
-web page's SSH panel ("Install a .zip", "Wire backboardd": iOS 26's direct mode, the inject as a weak load command).
+`.github/workflows/chlorophyll.yml` (artifact `chlorophyll-ios18.zip`) and is, since 2026-11-12, **in the root by default**: the
+web installer merges the `chlorophyll-ios18` release into `berga-tools.zip` and Renegade wires backboardd (iOS 26's direct mode, the inject as
+a weak load command) while it builds the root. The page's SSH panel ("Install a .zip", "Wire backboardd") remains for repairs.
 
 The framebuffer must be in direct mode with the scan-out copy, as on beryllium: `sweetfb_direct=1 sweetfb_smmuadopt=1
 sweetfb_swapdepth=2 sweetfb_scancopy=2`. Plain zero-copy (`sweetfb_zc=1`) scans CoreAnimation's surfaces in place, and

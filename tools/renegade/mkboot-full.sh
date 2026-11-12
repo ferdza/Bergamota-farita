@@ -17,7 +17,23 @@ ADT=${2:-$(tg adt)}
 OUT=${3:-$WORK/enxerto-boot-${NAME}full.img}
 # RAM-disk cmdline of docs/IOS18_PORT.md section 9 with rd=md0 -> rd=ufsroot0 ufsrw=1 rootrw=1.
 # ignition_level=1: dyld's libignition looks for the cache in /System/Library/Caches/com.apple.dyld only.
+[ -n "${CMDLINE:-}" ] && CMDLINE_GIVEN=1
 CMDLINE=${CMDLINE:-"debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30 sweetfb_vsync=1 sweetfb_scale=1 sweetfb_flip=1 sweetusb=2 sweetbattery=1 sweetfb_hw=1 sweetarm64e=1 launchd_disable_all_timeouts=1"}
+# GPU 3D on by default (SDM845 boards): the boot-args of tools/renegade/gpu-default-args.txt (sweetgpu=8 with the governor, boost,
+# clock gating and idle slumber, the direct scan-out framebuffer Chlorophyll needs) are appended to the default CMDLINE. The
+# Chlorophyll userland is already in the root (the web installer / Renegade adds it and wires backboardd), and the inject only
+# runs while the kernel's GPU is up. GPU=0 builds the CPU-renderer image; a CMDLINE you pass yourself is used as is.
+GPU=${GPU:-1}
+BOARD_NAME=${BOARD:-beryllium}
+if [ "$NAME" = ios18 ] && [ -z "${CMDLINE_GIVEN:-}" ] && [ "$GPU" != 0 ] && { [ "$BOARD_NAME" = beryllium ] || [ "$BOARD_NAME" = fajita ]; }; then
+	GPU_ARGS=$(grep -v '^[[:space:]]*#' tools/renegade/gpu-default-args.txt | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+	CMDLINE="$CMDLINE $GPU_ARGS"
+fi
+# the boot header holds 607 characters of command line: refuse a longer one instead of cutting it in the middle of an argument
+if [ "${#CMDLINE}" -gt 607 ]; then
+	echo "error: the command line is ${#CMDLINE} characters, the boot header holds 607 (drop an argument or set GPU=0)" >&2
+	exit 1
+fi
 mkdir -p enxerto/out
 # Apple logo as Enxerto's last frame (docs: tools/mkapplelogo.py): read from the iOS root you built, never
 # committed. APPLE_LOGO=0 skips it (the Bergamota screen stays), APPLE_LOGO_PNG=file uses an extracted PNG.

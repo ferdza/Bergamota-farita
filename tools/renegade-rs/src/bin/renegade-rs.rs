@@ -1187,7 +1187,7 @@ fn tools_from_dir(dir: &Path) -> Res<renegade::tools::Tools> {
                 todo.push(p);
             } else if p.is_file() {
                 let rel = p.strip_prefix(dir)?.to_string_lossy().into_owned();
-                if ["ssh/", "sweetnet/", "bergamota-gl/"].iter().any(|x| rel.starts_with(x)) {
+                if ["ssh/", "sweetnet/", "bergamota-gl/", "bgmtl/"].iter().any(|x| rel.starts_with(x)) {
                     files.insert(rel, fs::read(&p)?);
                 }
             }

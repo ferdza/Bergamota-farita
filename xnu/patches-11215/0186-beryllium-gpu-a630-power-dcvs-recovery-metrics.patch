@@ -826,7 +826,7 @@ diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
  	bool rail = false, gx = false;
  	if (booted && mode >= 5) {
  		rail = gpu_gx_rail_on();
-@@ -2972,6 +3563,42 @@
+@@ -2972,6 +3563,49 @@
  		mode = 8;
  	}
  	a630_mode = mode;
@@ -863,6 +863,13 @@ diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
 +				a630_gov = 1;                   /* starts at the lowest level, the governor moves it */
 +			} else if (fb[0] >= '1' && fb[0] <= '9') {
 +				a630_level = (unsigned)MIN((unsigned)(fb[0] - '0'), a630_level_max);
++			} else {
++				/* PE_parse_boot_argn stores a numeric value as a binary int, not as text: sweetgpufreq=7 */
++				uint32_t num = 0;
++				memcpy(&num, fb, sizeof(num));
++				if (num >= 1 && num < GPU_NLEVELS) {
++					a630_level = (unsigned)MIN(num, (uint32_t)a630_level_max);
++				}
 +			}                                       /* "off": fixed lowest level (default) */
 +		}
 +	}

@@ -8,6 +8,16 @@
 * NOT redone (unverified, may be the panic): PSCI SYSTEM_RESET before PS_HOLD + IMEM clearing on reboot; sweetfb_hz=60 sweetfb_vsync=0 in daily args; the touch idle throttle.
 * Next: run the xnu CI, boot, and if it still panics bisect 0035 -> 0260 -> 0252 using the panic text.
 
+### >>> 2026-11-12: unified install, GPU 3D on by default (not run on a phone, not run in CI) <<<
+* **Protocol:** docs/INSTALL.md. Root = web installer; boot image = `tools/install/build-boot.sh fajita|beryllium`; boot = fastboot page.
+* **Done (observed: builds and unit tests only):**
+  - Renegade (tools/renegade-rs/src/tools.rs `chlorophyll()`): when the bundle has `bgmtl/{bgmtl-inject,libchlorophyll,libdrm.2}.dylib` it installs them in /usr/local/lib/bgmtl, links the inject weakly into backboardd (`backboardd.orig` kept; short symlink /usr/local/bgi.dylib when the header has no slack), writes bgmtl-bb.arm + bgmtl-bb.direct. No file / link failure = nothing changed, logged. Tests: tests/chlorophyll.rs (3, pass). Pre-existing, unrelated failures in this sandbox (run as root): tests/tweaks.rs (4, owner records) and hfswrite root_build_from_a_folder (missing file); same without my changes.
+  - CI: chlorophyll.yml publishes release `chlorophyll-ios18` (input publish=true); pages.yml merges it into berga-tools.zip with tools/berga-tools/add-chlorophyll.py (manifest hashes updated; tested on fake zips). NOT run yet: run chlorophyll.yml first, then pages.yml.
+  - mkboot-full.sh appends tools/renegade/gpu-default-args.txt (was fajita-daily-args.txt, 60 Hz change dropped) for ios18 on beryllium/fajita (GPU=0 opts out, 541 of 607 chars, hard error above 607).
+  - Kernel 0186: `sweetgpufreq=N` numeric now accepted (PE_parse_boot_argn stores a binary int). Hunk header recounted; check-patches.py passes; NOT compiled (needs the xnu CI).
+* **Guesses / open:** the inject only goes live if the kernel boots sweetgpu=8 with the ADT firmware (zap from the phone / pmOS); the fajita `-v` in gpu-default-args.txt is kept as it was (verbose boot, not checked on the new default). Python builder still wires Mercury only.
+* **Next:** (1) run chlorophyll.yml (publish), then pages.yml, patch a root and read the `chlorophyll:` line; (2) xnu CI with the 0186 fix; (3) boot a build-boot.sh image on the 6T; (4) perf plan from the web survey: per-draw CPU cost above the driver (100-200 us in backboardd vs 3-7 us in tests), deferred command recording, texture size buckets, lower render scale.
+
 ### >>> 2026-11-03: fajita (OnePlus 6T) board added — Enxerto builds, iOS 18 <<<
 New workstream in this fork (`ferdza/bergamota-farita`, branch `fajita`): add the
 **OnePlus 6T (fajita, SDM845/Adreno 630 — same SoC as beryllium)** as a board, on
