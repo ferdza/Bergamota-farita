@@ -1,7 +1,6 @@
 # iOS on Android hardware: landscape map, 2026-11-12
 
-Status of this document: written incrementally (each section is committed on its own). Sections marked DRAFT are
-still being filled. Everything about other projects is untrusted third-party data: nothing was run or built.
+Status of this document: complete first pass, 2026-11-12. Everything about other projects is untrusted third-party data: nothing was run or built.
 
 ## 0. Method, evidence tags and limits
 
@@ -15,14 +14,14 @@ Sources, in order of weight:
 - **R = README / docs claim** read on the web (WebFetch of a repo page or hackiosx.dev) but not checked against code.
 - **S = GitHub search metadata** (`gh api search/repositories`: pushed_at, licence, stars, description). Reliable for
   existence/date/licence, says nothing about whether the code works.
-- **P = press, P? = rumour**: none found yet in this pass (see section 5, open items).
+- **P = press, P? = rumour**: Android Authority 2026-10-21 (ios-sweet, official forks Redmi Note 12 Pro and LG V60, in-progress OnePlus 7T, Redmi 5 Plus, Galaxy S23 Ultra), Windows Latest 2026-10-27 (SmuOS UniXNU-zeta: iOS 26.5.2 on Surface Duo 2, SD888, about 37 fps, Wi-Fi/BT N/A, Turnip), TechEBlog about 2026-11-02 (Poco F1, snippet only). Press repeats README claims; treat as R.
 - A claim from one project's page about another project (for example HakiOS's comparison table) is R at best.
 
 Limits of this pass: the repo REST API for individual repos (`gh api repos/OWNER/NAME`) is refused for everything except
 search, so licence/last-push come from search results. `projects.html#community-ports` of hackiosx.dev was fetched (R).
 Telegram, X, reddit and YouTube were not reachable/searched yet (open items).
 
-## 1. Projects found (DRAFT: table 1a verified-in-clone entries, 1b search/R-only entries)
+## 1. Projects found
 
 Abbreviations: ok = claimed working, part = partial, no = stated missing, ? = not stated.
 "xnu" is the open-source xnu version the kernel is built from.
@@ -79,7 +78,7 @@ Abbreviations: ok = claimed working, part = partial, no = stated missing, ? = no
 | Droid-VM/macOS-DroidVM, UniXNU-droidvm | crosvm + Gunyah guest on Android phones | iPadOS 17.7.11 / macOS 27 | ? | V (UniXNU README, devices.toml): a virtualisation route, not bare metal |
 | MovByte/AirWgsl, MovByte/WebMetal | Metal via WGSL/WebGPU for UniXNU | | | existence only (S) |
 
-Not found: any press coverage (9to5mac, Android Authority, Pocket-lint) and any Telegram/X/YouTube evidence (see section 5).
+Press seen: see section 0 (P). Not reached: Telegram, X, reddit, YouTube (section 5).
 
 ## 2. Per-subsystem best known implementation
 
@@ -116,14 +115,62 @@ Licence rule of thumb for our tree (xnu patches are APSL-2.0; Renegade, Enxerto 
 
 Caveat: sweet rows are README claims (LMasterPiec3 tree); I read patch names and docs, not the code behind them.
 
-## 3. Ranked list of 15 techniques/features for the OnePlus 6T (DRAFT)
+## 3. Ranked list: 15 techniques/features others have and we lack, for the OnePlus 6T
 
-(To be written.)
+Ranked by value to the 6T (which already has boot, SMP, display, Synaptics touch, USB-ECM/SSH, Chlorophyll GPU per docs/FAJITA.md), then by cost. Effort: S = days, M = 1-2 weeks, L = 3-6 weeks, XL = longer. "Ask" = no licence found, idea-only until the author says yes.
 
-## 4. Corrections to docs/FORKS_SURVEY.md (DRAFT)
+| # | Technique / feature | Who has it, where to read | Effort | Notes for SDM845 |
+|---|---|---|---|---|
+| 1 | **Wi-Fi on WCN3990**: modem PAS boot, GLINK/QRTR, pd-mapper/tftp/rmtfs stand-ins, WLFW, CE/HTC/WMI/HTT, scan, WPA2 PSK, Apple80211 + en0 for wifid | sweet `wland-0239` + patches 0138/0141/0152/0153 (WCN3990 on SM7150); flame `bsd/dev/flame_sta.c`/`flame_wlan.c`; topaz `TopazModem.cpp` + 0113-0130 + 0900 (APSL, WCN3988); HakiOS `drivers/wifi/*` + `docs/driver-review/wifi-bringup.md` | L | Same chip family and same SNOC+QMI architecture as ours (V topaz patches mention WCN3988/WCN3990, ath10k). Only 6T-specific: board data file (BDF) from our own modem partition, rails, SMMU stream. edi194 intends the same port, so coordinate |
+| 2 | **Bluetooth on WCN3990** (HCI UART H4, firmware download, in-band sleep, AppleBTHci, bluetoothd bootstrap) | sweet patch 0154 (`sweet_bt.c`, `sweet_bt_hci.c`), 0155, `docs/BLUETOOTH-SWEET-REFERENCE.md`, `userspace/bt/`; UniXNU `docs/porting/bluetooth.md` (power-up order) | M | Needs only a GENI UART and the WCN rails, no modem. README claim: pairing and audio. Coexistence bug with Wi-Fi scan. Our bluetoothd crash-loops today (docs/FAJITA.md) |
+| 3 | **Native A6xx kernel driver design**: per-client VMs, buffer objects, fences, CP ring owned by the kernel, SMMU fault routing, GPU-lost reporting | sweet 0107-0112, 0134, 0170-0172, `docs/native-adreno-0108.md`; UniXNU Adreno740 `docs/drivers/adreno740.md`, `kits/ArmSmmu4K`; edi194 hit the same SMMU "PTE removed under the CP" problem on a630 (commits 2026-11-05/06) | L | Replaces msm-ioctl emulation if ours is that; check against docs/GPU_KERNEL.md first. A618 and A630 share the GMU/ZAP/SQE flow |
+| 4 | **Frame-rate techniques** measured on a 120 Hz-class panel: render at 750x1624 or 828x1792 and stretch; `wallpaper_cache`/`wallpaper_freeze`; `fb_beam`; touch-lift latency; shader-variant matching for CoreAnimation pipelines; `metal_defer` | HakiOS `docs/reference/metal-measurements.md`, `CHANGELOG.md` 2026-11-03..05, `tools/metal-run.sh`, `docs/driver-review/gpu-display.md` | S-M | Pure policy, no new hardware. HakiOS numbers: 118 fps scroll at 828x1792 vs ~90 at full size. Our docs/GPU_PERF_PLAN.md may already cover some |
+| 5 | **Audio via ADSP** (APR, AFE/ADM, amp control, CoreAudio PCM ring and virtual HAL plug-in) | sweet 0195/0196/0206/0215, `userspace/adsp/`; HakiOS `drivers/audio/`, `docs/driver-review/sound.md`; topaz `userland/audio/` | L | Codec side differs on SDM845 (my inference, unverified: WCD9340 over SLIMbus); the APR/ADSP boot and PCM path should transfer |
+| 6 | **Modem/IPA data and SIM** (NAS, WDS, DPM + WDA ordering, IPA GSI rings, en1 with fake router + DHCP so configd adopts it) | HakiOS `docs/cellular.md`, `drivers/modem/*`; sweet 0192-0194, 0241; UniXNU QcomBaseband (CommCenter bridge) | XL | Depends on #1's modem plumbing. SDM845 has IPA v3.5.1 (my knowledge: HakiOS targets v4.11, so tables differ) |
+| 7 | **Battery state of charge + charge control** | sweet 0156-0162, 0199, 0227 (PM6150 QG, charge counting, stale-SDAM floor); sailfish PMI8994 charging 1.5 A (R); topaz 0091 | M | PM8998/PMI8998 gauge differs; use as method. Our docs/BERGAMOTA_CHARGE.md may already cover charger |
+| 8 | **Sensors** via ADSP/SEE client feeding HID | sweet `userspace/sensors/` (from ios-redfin, MIT), 0237/0238 | M | SDM845 puts sensors on SLPI, not ADSP (my knowledge, unverified), so the transport may differ |
+| 9 | **Rootful jailbreak / tweak injection** (Procursus, Sileo, OpenSSH, NewTerm, ElleKit; `exec_inject`) | k6a README (R); HakiOS `tools/mk-jb.sh`; topaz 0919, 0947 | S-M | Big developer-ergonomics win (apt, debugging tools); security is already off |
+| 10 | **Apple-native USB stack** (QcomDwc3 over AppleUSBXDCI so configd, lockdownd and usbmuxd-style services see a real gadget) | UniXNU `docs/porting/usb.md`, `QcomDwc3.cpp` | L | We have ECM which works; benefit is iTunes-style tooling and removing the SweetNetwork stand-in. Low urgency |
+| 11 | **cpufreq / thermal guard** (raise-only to a percentage of max, 27-sensor read, stop hands back) | HakiOS `drivers/power/hakios.{cpufreq,thermal}.c`; sweet 0126; topaz 0094; old survey Lrdsnow 0095 | S-M | No thermal management under iOS; phone heats |
+| 12 | **Boot-arg catalogue + provenance guard + defconfig** tooling | HakiOS `docs/boot-args.md`, `tools/boot-args.py`, `tools/provenance-check.py`, `docs/configs.md` | S | Housekeeping that keeps handoffs honest; also guards against committing Apple/vendor binaries |
+| 13 | **Entry-probe / kernel panic-screen instrumentation** and persistent log window readable without a kernel | UniXNU enchilada doc (`scripts/patch-xnu-entry-probe.py`, SHLOG001) | M | We have a UDP log and Enxerto; useful for first-instruction failures on a new SoC revision |
+| 14 | **Hardening review of our QRTR/GLINK/SMEM parsing** against HakiOS's audit findings (uint32 length wrap, unchecked SMEM extents) once #1 exists | HakiOS `docs/driver-review/wifi-bringup.md` W1-W3 | S | Cheap prevention |
+| 15 | **Camera** | HakiOS `drivers/camera/` (Camera.app on redwood, R) | XL | Different ISP/sensor stack; research only |
 
-(To be written.)
+Not worth chasing for the 6T: 4K-page kernel (topaz, ios-switch, UniXNU; Kryo 385 runs 16K), UEFI route (our ABL route works; UEFI on fajita only reached root mount without storage in UniXNU), macOS-on-Snapdragon (Snapintosh), virtualised guests (Droid-VM), Tegra/Exynos/MediaTek ports.
 
-## 5. Open items / repos to clone
+## 4. Corrections to docs/FORKS_SURVEY.md (dated 2026-10-19/20)
 
-(To be written.)
+Each item: what the survey says, what the evidence now says, source tag.
+
+1. **"No Pixel 3 / OnePlus 6 / Mi 8 / Poco F1 port found other than yours. ios-beryllium forks: none besides yours." (section E)** is wrong. SDM845 efforts now include: LakoMoor/ios-beryllium (Poco F1, MIT, S), WeiXiaoye/perseus-xnu (MIX 3, HackiOS-based, R), UniXNU device records for fajita (johnpanos, stesen), enchilada (keyfan x2, dragon120820, rou2ter, wangshaofan82-png), dipper (hanyaa380), polaris (luuu20309, SPRMD, lxsc-zk, PuszekReksio) (V `UniXNU_UniXNU/devices.toml`), JaneAwA polaris repos, and several more fajita copies (flyoer5, nmac101, bolin2252i, qfl152, funnysky943, ferdza, miguelgargs: S). Press (TechEBlog, about 2026-11-02) also covered a Poco F1 boot (R, snippet only).
+2. **edi194/ios-fajita "NO USB driver at all, little else" (A5, E)** is stale. edi194's README (R) now lists RMI4 touch, PM8998 keys, 8 cores, GUI, and a GPU ladder that brings up the a630 GMU (HFI v1 both ways, GX on); commits of 2026-11-05 add "usb: power the SDM845 controller up, with fajita's own clock offsets", reboot-to-fastboot via qcom-pon/misc, and CP-submit debugging with an SMMU translation fault. No USB enumeration claim yet. Licence none shown.
+3. **"Nobody has a working accelerated renderer; these are bring-up ladders" (C)** is wrong. Claimed working GPU UI: HakiOS (Adreno 642L, Mesa GLES and Metal, V devices/redwood.md, README fps), topaz (A610, Mesa, V README), sailfish (A530), k6a (A618, 4-8 ms frames), flame (A640 Metal over Turnip, 20-26 fps), sweet native Metal (A618, ~37 fps, README), UniXNU sheng (A740, Metal, V docs), pong (A730, R), perseus (A630, freedreno, CPU copy, R). Our own Chlorophyll is in this group.
+4. **"ibragruslan nabu 0085 ... best single reference for SDM845 GPU; README still says no GPU driver"** is superseded. Closer references for an a6xx GMU+ZAP+SQE bring-up are sweet 0081-0112 (A618) and edi194's a630 notes (NOTES-FAJITA, with SDM845 register offsets, ARC levels, SMMU quirks). UniXNU's Adreno740 and ArmSmmu4K are the maintained kernel-side code. Note edi194's warning that HakiOS's driver targets an a660 and writes clocks that do not exist on SDM845 (R).
+5. **"Wi-Fi/modem: only MakrSas/ios-topaz (known)... PalanBanana skeleton... Topaz (WCN6856/WCN3980-class)" (C)** needs updating. Wi-Fi on **WCN3990 itself** is claimed by sweet (LMasterPiec3 tree: WPA2, DHCP, fast scan) and flame (R); topaz's chip is WCN3988 (V: strings in its patches), not WCN6856; HakiOS has ath11k WCN6750 (V); UniXNU has ath12k (V). Bluetooth on WCN3990 is claimed working with audio by sweet (R; patch 0154 V), not only "diagnostics" as in ios-v60. HakiOS and sweet also have modem boot, QRTR, RMTFS and IPA data work (V docs/cellular.md).
+6. **"zsariboga/ios-sweet ... 0092 accel stub"** (B) is covered by edi194 patch 0086-0088 and topaz 0138 "empty IOAcceleratorES"; no correction needed beyond noting this is now standard.
+7. **A1-A3 USB hardware facts** remain valid as evidence, but "the only confirmed hardware success on USB3-capable Qualcomm DWC3 is Spacewar" is no longer true: ours (6T, CDC-ECM), flame SD855 USB SSH (R), sweet 0072-0077 on SM7150, pong 480 Mbps (R), UniXNU QcomDwc3 (V docs). The "SDM845 CMDACT-stuck" experiments are moot for us because USB works in this tree (docs/FAJITA.md); keep A3 only if another SoC regresses.
+8. **"terx1232 4K pages ... Kryo 385 supports 16K? (A75 does)"** can be closed: 8 cores with 16K pages run on Kryo 385 (ours, edi194, perseus). 4K builds are needed on A53-class cores (topaz V README).
+9. **Header counts and method** ("132 of 187 forks, 35 ahead") are out of date. `search/repositories` now shows 71 repositories with "ios-sweet" in the name, 425 matching "UniXNU", 107 matching "hackios" (S, 2026-11-12), and UniXNU lists 355 device records. Many "ios-sweet" hits are CI mirrors.
+10. **dipa-studio/ios-sweet is no longer the only family root.** HakiOS (oosexgang) predates or parallels it (topaz CREDITS: HakiOS kept private until 2026-10-22); UniXNU is a separate UEFI-based lineage; LMasterPiec3/ios-sweet carries 224 patches and a 2026-11-09 README, and the dipa-studio repo last pushed 2026-10-23 (S). Which is canonical needs checking (open item).
+11. **Lrdsnow/ios-froggerpro, anonbeat1, arielTROY, marnov999 etc.** were not re-checked in this pass; marnov999 has since moved to an iOS 26 / xnu-12377 repo (`ios26-sweet`, preparation only, R) and their sweet fork's GPU "v1..v19" notes were not re-read.
+
+## 5. Open items and repos worth cloning (read-only)
+
+Not reached in this pass (rate limit, effort): Telegram (t.me/unixnu), X (@UniXNU_new), reddit r/hackios, YouTube descriptions, haroonalhadi.com blog, note.com HackiOS article, Show HN thread, TechEBlog Poco F1 article, Sportskeeda and KuCoin flash pieces (only titles seen via search; Android Authority 2026-10-21 and Windows Latest 2026-10-27 were fetched).
+
+Clone next, in priority order:
+
+1. `edi194/ios-fajita` (our device; GPU ladder, RMI4, USB start; read `NOTES-FAJITA.md` fully, only first 100 k of 357 k chars were read)
+2. `LMasterPiec3/ios-sweet` is already cloned; additionally clone `dipa-studio/ios-sweet` to decide which is canonical, and read sweet `NOTES.md` Wi-Fi and Bluetooth entries
+3. `NWylynko/ios-flame` (WCN3990 Wi-Fi `flame_sta.c`, `flame_wlan.c`, USB file server)
+4. `joranv1/ios-sailfish`, `nonrootus/ios-sweet_k6a` (GPU driver, jailbreak)
+5. `WeiXiaoye/perseus-xnu` (SDM845 HackiOS port, edk2-sdm845 UEFI, touch via UEFI)
+6. `keyfan/UniXNU-enchilada-bringup`, `johnpanos/UniXNU-fajita`, `UniXNU/QcomDwc3`, `UniXNU/QcaBluetooth`, `UniXNU/QcomBaseband`, `UniXNU/Adreno740`, `UniXNU/ArmSmmu4K`
+7. `none24smu/UniXNU-zeta` (iOS 26.5.2 PAC stripping), `marnov999/ios26-sweet`
+8. `LakoMoor/ios-beryllium` (Poco F1)
+9. `limonetexd/ios-sweet-gpu` (branch `gpu`, `METAL_FINDINGS.md`)
+10. `oosexgang/hakios-metal`, `oosexgang/hakios-sm7325`, `e-xq/HackiOS-DiPPER-Audio` (SDM845 audio?)
+11. `Snapintosh/SnapAdreno` only for design contrast (licences mixed)
+
+Facts I could not verify: licence of most repos (page did not show it), last-commit dates for repos fetched through the web page (only search `pushed_at`), whether LMasterPiec3/ios-sweet is the maintainers' main tree, and every performance number beyond the project's own claim.
