@@ -255,4 +255,172 @@ count, `dpu_encoder` vsync irq.
 **F-32 (P3, OBSERVED)** HUD/stat code (`hudRender`, `statsTick`, trace ring 128 entries, relaxed races) ships in the
 daily kernel; races are benign but add per-frame cost. Gate by `sweetfb_hud`.
 
-(Sections 7-12 continue below.)
+---
+
+## 7. Touch: Synaptics S3706 RMI4 (0252, 0253; `bsd/dev/sweet_touch.c` `touch_fajita_thread`)
+
+What we have: own GENI SE12 bring-up, ldoa28 3.008 V vote through `sweet_rpmh_vreg_set`, VIO switch gpio88, reset
+gpio99 pulse, ATTN gpio125 configured as an input, PDT walk (F01/F12), F01 reset + 200 ms, interrupt-enable of every
+PDT source, then a **polling loop**: read F01 data (status + IRQ bytes) every 10 ms and the F12 object report when the
+F12 IRQ bit is set or every 5th tick. Linux reference (`sdm845-oneplus-common.dtsi`): `syna,rmi4-s3706b`, interrupt
+`tlmm 125 EDGE_FALLING`, vdd `l28a` 3.0 V, vio via gpio 88 enable. Our register/GPIO facts match the DT.
+
+**F-33 (P2, OBSERVED) ATTN is never used.** gpio125 is set up as an input but the thread polls over I2C 100x/s
+(2x/s with display off, 0258). Each poll is two I2C transactions (`rmi_read` = pointer write + read, because
+`touch_msg` refuses combined transfers): ~200 GENI transfers/s with the screen on, keeping a CPU out of deep idle.
+Idea: poll the TLMM gpio125 level (one MMIO read of `TOUCH_GPIO_IO(125)`) and do I2C only when ATTN is low
+(Effort S, risk low); the interrupt version needs F-48.
+
+**F-34 (P1, OBSERVED) Write-pointer + read are two transactions** (`rmi_read`): relies on the RMI4 address pointer
+persisting. Linux `rmi_i2c_read_block` uses two messages in one `i2c_transfer` (repeated start). A spurious F01
+reset between the two calls reads garbage. Teach `touch_msg` a repeated-start read. Effort M.
+
+**F-35 (P1, OBSERVED) Permanent give-up.** After 200 consecutive read errors (~2 s) the thread breaks out and
+terminates; touch is dead until reboot. Also the default `sweettouchdelay` is 45 s: touch only starts 45 s after
+boot unless the boot-arg is set (observed in the code). Add reset + re-PDT recovery with backoff. Effort S.
+
+**F-36 (P2, OBSERVED) No sleep.** `rmi_f01_init` writes `0x84` (CONFIGURED | NOSLEEP); the panel never dozes when the
+screen is off. Linux rmi4 uses sleep mode on suspend. Set doze/sleep on `sweet_display_off`. Effort S, risk: wake latency.
+
+**F-37 (P3, OBSERVED) Raw size from boot-args** (`sweetts_xraw/yraw`, default 1080x2340) instead of the controller's
+F12 sensor size; Linux DT also carries `syna,clip-y-high = 2339`. Read it from the F12 control registers. Effort S.
+
+**F-38 (P3, UNVERIFIED)** `rmi_frame` treats any object with status != 0 as a touch; no object-type filter
+(palm/glove). Compare with Linux `rmi_f12_process_objects` (idea only).
+
+---
+
+## 8. Buttons (0060, 0082b; `bsd/dev/sweet_keys.c`)
+
+Polled PM8998 PON RT status (power, RESIN = vol-down) and PM8998 GPIO6 (vol-up) through observer reads; same wiring
+as the Poco F1 (UNVERIFIED for the 6T unit; NOTES say buttons work).
+
+**F-39 (P3, OBSERVED)** Timer polling, no PMIC interrupt: fine while idle is WFI-only.
+**F-40 (P3, UNVERIFIED)** The 6T **alert slider** (tri-state key on TLMM GPIOs) is not supported; map to the ringer switch.
+
+---
+
+## 9. Battery, charger, fuel gauge (0092, 0130, 0200, 0201, 0219, 0223-0226, 0244, 0248; `SweetBattery.cpp`, `sweet_charger.c`)
+
+What we have: SMB2 charger block read (and, on `sweetcharger=2`, seven whitelisted registers written) on PMI8998
+SID 2; iOS battery service fed by the PMI8998 FG gen3 MSOC (`0x4009`) and voltage/current words (`0x41a0/0x41a2`);
+fixed design capacity 5020 (the beryllium value; docs/FAJITA.md already notes the 6T mismatch).
+
+**F-01 (P1, OBSERVED code + Linux DT) Wrong gauge on the 6T.** `sdm845-oneplus-common.dtsi`:
+`bq27441_fg: bq27441-battery@55 { compatible = "ti,bq27411"; reg = <0x55>; }` on `&i2c10`; `&pmi8998_charger` and the
+gauge point at `battery` with `charge-full-design-microamp-hours = <3700000>` and `voltage-max-design-microvolt =
+<4400000>`. Our fajita path (`sweet_board_beryllium()` true) takes the "PMI8998 FG SOC" branch (`pollBeryllium`)
+and the 5020 mAh constant. UniXNU's OnePlus 6 record (`docs/.vitepress/device-records/enchilada-dragon120820.toml`)
+lists the same topology (TI BQ27541 at 0x55, smb1355 chargers, `oneplus_fastchg` MCU at 0x26). Likely consequence:
+SOC is not the real pack SOC (NOTES: "state-of-charge not yet confirmed"). Fix: read the bq27411 over I2C10
+(`qupv3` SE10, same GENI helpers as the touch SE12 path) with the standard bq27xxx commands (voltage 0x04, current
+0x10, SOC 0x1c, temperature 0x02; confirm against the TI bq27411 datasheet / Linux `bq27xxx_battery.c`, GPL idea only).
+Set design capacity 3700 mAh, max 4.4 V. Effort M, risk low (read-only I2C).
+
+**F-41 (P1, OBSERVED) Charger read-only on fajita; ABL input limit ~25 mA at kernel start.** The 0248 comment says the
+bootloader's ~25 mA limit left boot on the battery until the kernel raises it. With the read-only default
+(FAJITA.md rule) the 6T can run from the battery while plugged in; observed `state=INHIBIT`, SDP 500 mA. The 6T also
+has the OnePlus fast-charge MCU, which we never talk to (5 V/2 A DCP is our ceiling). Mainline equivalent for the
+PMI8998 block: `drivers/power/supply/qcom_pmi8998_charger.c` (GPL, idea only: APSD result -> ICL, hardware JEITA).
+Enabling `sweetcharger=2` on fajita is a policy decision; do F-01 first so the result is measurable.
+
+**F-42 (P2, OBSERVED)** `sc_unsafe` ignores battery OV, safety-timer expiry and the soft-JEITA bits by design
+(0223-0226). Defensible, but there is no thermal driver at all (TSENS unused): a hot pack is never seen.
+
+**F-43 (P3, OBSERVED)** RRADC scaling (`raw*4715/1024` mA, `raw*20000/1024` mV) matches 1.886*2.5 A and 8*2.5 V.
+**F-44 (P3, OBSERVED)** `estimatePercent` table tops at 4350 mV; the 6T max is 4400 mV (moot after F-01).
+
+---
+
+## 10. SMP / idle / cpufreq / steering (0065, 0078, 0093, 0171, 0190-0192; `SweetCPU.cpp`, `sweet_cpufreq.c`)
+
+What we have: PSCI CPU_ON (fn 0xC4000003) for 7 secondaries through XNU's IOCPU, 8 cores; idle = WFI;
+`quiesceCPU()` and `haltCPU()` **panic**; cpufreq via the OSM LUT at `0x17d43000`/`0x17d45800` with a 25 ms sampling
+thread, A55 capped at 50 %, A75 to max under load, touch boost; idle-core steering in `sched_prim.c`.
+
+**F-45 (P1, OBSERVED)** `haltCPU`/`quiesceCPU` panic ("not implemented"). Any path that offlines or sleeps a CPU
+panics the machine. Nothing calls it today, but that also means a core can never power-collapse. Linux `sdm845.dtsi`
+idle states: `arm,psci-suspend-param = <0x40000004>` (core) and `<0x4100c244>` (cluster). PSCI `CPU_SUSPEND`
+(0xC4000001) needs a warm-boot entry (`sweet_secondary_entry` exists for CPU_ON) restoring GIC redistributor, timer
+and MMU state. Effort L, risk high. Short term: make both functions fail safe (WFI/return), Effort S.
+
+**F-46 (P2, OBSERVED)** The governor is a 25 ms polling thread regardless of load (40 wakeups/s). Back off to 100 ms
+after 1 s idle, or hook the scheduler. Effort S-M.
+
+**F-47 (P3, OBSERVED)** `SweetCPU::start` names every core "Kryo 470" (SM7150); SDM845 is Kryo 385. Cosmetic.
+
+**F-48 (P2, OBSERVED) No device interrupts.** `pe_init_fiq` enables only the virtual-timer PPI (INTID 19, matches
+Linux `timer` PPI 3) and SGI 1; no SPI is ever enabled, so UFS, USB, MDP, touch, SPMI and GPU all poll (F-17, F-20,
+F-31, F-33). SPI delivery needs GICD ISENABLER/IGROUPR/IROUTER and an `sleh_irq` dispatch table (`ARE_NS` is already
+set). The biggest single idle-wakeup reduction. Effort L, risk medium. Idea: Linux `irq-gic-v3.c` ordering.
+
+**F-49 (P3, OBSERVED)** `pe_init_fiq` does the `GICD_CTLR` read-modify-write and RWP wait on every CPU; idempotent but
+unsynchronised. Do it on the boot CPU only.
+
+---
+
+## 11. Timers, memory, pmap
+
+Timer: architected virtual timer through GIC PPI 3 (INTID 19), ADT timebase 19.2 MHz; matches Linux `sdm845.dtsi`
+timer PPIs 1/2/3/0 and GICD `0x17a00000` / GICR `0x17a60000` (8 x 0x20000). **OBSERVED OK.**
+Memory/pmap: only Sweet-specific bits were skimmed (`sweet_dma_sync_va`, DMA windows via `kmem_alloc_contig`).
+**UNVERIFIED** beyond that; a pmap/PPL review was not done.
+
+**F-51 (P2, OBSERVED)** `__ARM_COHERENT_IO__` makes `flush_dcache64`/`clean_dcache64` a bare `dsb` for all of XNU.
+Our drivers wrap it with `sweet_dma_sync_va`, but every remaining caller of `flush_dcache64`, `clean_dcache64` and
+`dcache_incoherent_io_*` that feeds a non-coherent master (a630 page tables, SweetSurface, IOMemoryDescriptor
+prepare) silently skips maintenance. Enumerate them (grep) and wrap. Effort S.
+
+---
+
+## 12. External projects
+
+Local clones (read-only, untrusted, nothing run):
+- `UniXNU_UniXNU/docs/.vitepress/device-records/enchilada-dragon120820.toml` (OnePlus 6, sibling of fajita): TI BQ27541
+  gauge, smb1355 chargers, `oneplus_fastchg`, DSI ctrl0 `0xae94000`, panel claimed `samsung,sofef00` (third-party
+  claim). Hardware inventory only, status "planned": no working driver to copy.
+- `LMasterPiec3_ios-sweet`, `MakrSas_ios-topaz`: same HFS staging as our 0026 (hfs-627.100.6); grep for
+  `dload|SDI_CONFIG|download_mode` finds nothing relevant, so nobody there solved CrashDump either.
+- `urielc918_ios-switch/shim/shim.c`, the two ios-sweet `shim/shim.c`: contain PSCI suspend/off constants at shim
+  level; not read in depth (UNVERIFIED relevance).
+GitHub search (gh, search only), forks seen and not read: `limonetexd/ios-sweet-gpu` (Adreno 618 Metal),
+`WuuuWeiii/ios-sweet-ci` (HackiOS polaris CI), `myh982516/ios-sweet-umi`, `1696108518/iPadOS-liuqin` (SM8475).
+None is SDM845/fajita; polaris (SDM845) is the closest SoC match: clone `WuuuWeiii/ios-sweet-ci` to check its
+UFS/USB/reboot patches (UNVERIFIED that they exist).
+Linux files used (idea/register facts only): `qcom_scm.c/.h`, `sdm845-oneplus-common.dtsi`, `sdm845-oneplus-fajita.dts`,
+`panel-samsung-s6e3fc2x01.c`, `sdm845.dtsi`.
+
+---
+
+## 13. Prioritised TODO
+
+**P0 (crash, data loss, reset behaviour)**
+1. F-04 Journal the HFS root (Renegade writes a journal, or first-boot enable). M-L / medium. Apple `hfs`
+   `core/hfs_journal.c` + the journaling fsctl in `hfs_vfsops.c` (APSL, already staged by 0026).
+2. F-03 Disable download mode + SDI before any reset (SCM svc 1 cmd 0x10 arg 0; svc 1 cmd 0x09 args 1,0; also at
+   boot). M / medium. `qcom_scm.c/.h` (idea only). Test on a throwaway `fastboot boot`.
+3. F-07 PSCI SYSTEM_RESET before PS_HOLD as a boot-arg experiment (NOTES records a panic after an earlier attempt). S / medium.
+
+**P1 (correctness)**
+4. F-05 SMMU lock: wait instead of EBUSY; abort USB start when the SID map fails. S / low.
+5. F-01 bq27411 over I2C10, 3700 mAh / 4.4 V. M / low. Linux `bq27xxx_battery.c` register table (idea).
+6. F-02 Fajita-gate the WLED backlight; DSI DCS brightness. L / medium. `panel-samsung-s6e3fc2x01.c`, `msm/dsi/dsi_host.c`.
+7. F-06 UFS error recovery. L / high. `ufshcd.c` error handler (idea). 8. F-15 TM ABORT TASK on timeout. M / medium.
+9. F-21 TRB status check in `ud_rx_done`. S / low. 10. F-35 touch recovery. S / low. 11. F-34 repeated-start read. M / low.
+12. F-11 fajita branches in `sweet_spmi_read`/`sp_write_allowed`. S / low.
+13. F-41 charger policy on fajita after F-01. S / medium. 14. F-45 `haltCPU` fail-safe. S / low.
+
+**P2 (performance / power)**
+15. F-48 GIC SPI delivery, then interrupt-driven UFS/USB/touch. L / medium.
+16. F-28/F-31 real display power-down (after F-02), vsync from the INTF frame counter. M-L.
+17. F-20 USB TRB ring; F-17 UFS queue depth. M-L. 18. F-33 touch ATTN level poll; F-36 touch sleep. S.
+19. F-46 governor wakeups (S-M); F-45 CPU_SUSPEND (L / high). 20. F-16 log ring retry/rate cap/volume-end check. S-M.
+21. F-22 release VBUS override without cable. M. 22. F-08 drop `sr_imem[0]` write; F-09 panic text to ramoops. S-M.
+23. F-25 SMMU map pools only (L); F-51 enumerate `flush_dcache64` callers (S). 24. F-12 SPMI un-poison. S.
+
+**P3 (polish)** F-23, F-24, F-26, F-30, F-37, F-38, F-40, F-42, F-47, F-49, F-44, F-13/F-14.
+
+## 14. Not covered
+
+GPU (a630), Wi-Fi/BT out of scope. pmap/PPL, `sleh.c`, SweetSurface/IOSurface lifetimes not audited. No dynamic
+testing. Every UNVERIFIED tag needs a device log before a fix is trusted.
