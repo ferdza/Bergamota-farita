@@ -280,8 +280,7 @@ Always-on changes of 0186 (also without the new boot-args): the CP stamps + `CP_
 **Nothing in this section was compiled, run in CI or run on a phone.** The three patches below (`0261`-`0263`, `xnu/patches-11215/`) were written against the
 file as the series 0103..0260 builds it (reconstructed with `git apply` in a scratch repo, so the context is exact; the three apply cleanly in order and
 `tools/check-patches.py` passes). The new logic of 0261 and 0263 was also compiled and exercised once as a stand-alone C file with stubbed kernel
-symbols (syntax and arithmetic only). The web pages named in the task (UniXNU, hackios-xnu-kernel, ios-topaz) were NOT consulted: no network research was done,
-the ideas below come from reading our own code and the measurements in NOTES.md (FPS rounds 2-4).
+symbols (syntax and arithmetic only). The other reference repos (UniXNU, ios-topaz, ...) were NOT read; the ideas below come from reading our own code and the measurements in NOTES.md (FPS rounds 2-4).
 
 ### Why the clock ramp is slow (read from the code, [V] = read, not measured)
 
@@ -319,8 +318,8 @@ the ideas below come from reading our own code and the measurements in NOTES.md 
 
 ### 0263: hang/fault report with ring and IB2 (`sweetgpudiag=0` disables)
 
-* What: extends `sweet_gpu_report()` (called before recovery on a hang, SMMU fault and wait timeout): CP_IB2_BASE/REM (regs 0x92b/0x92c/0x92d: taken from memory of the
-  a6xx register map, NOT checked against a header here), the 16 ring dwords around the CP's RPTR, and a scan of the ring for `CP_INDIRECT_BUFFER` packets that are
+* What: extends `sweet_gpu_report()` (called before recovery on a hang, SMMU fault and wait timeout): CP_IB2_BASE/REM (regs 0x92b/0x92c/0x92d: from memory of the
+  a6xx register map; cross-checked afterwards against hackios-xnu-kernel's drivers/gpu/hakios.adreno.c, which defines CP_IB2_BASE 0x092b and CP_IB2_REM_SIZE 0x092d (only that one file was read from the reference repos)), the 16 ring dwords around the CP's RPTR, and a scan of the ring for `CP_INDIRECT_BUFFER` packets that are
   the IB the CP reports (IB1) or that cover the faulting SMMU address, printed as `ring[i] IB <iova> size <bytes> = CP IB1 / covers FAR`. Ring memory is kernel memory,
   no further GPU register is read except the three IB2 words (and only while the core is readable, as for IB1). It does not parse IB contents (they live in client memory).
 * Expected effect: none on fps; a hang log names the submission and shows whether the fault is in the IB being run. This is the cheap part of UniXNU's hang diagnostics;
