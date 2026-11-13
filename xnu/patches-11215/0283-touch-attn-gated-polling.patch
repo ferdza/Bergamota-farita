@@ -1,0 +1,77 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -1301,8 +1301,28 @@
+ 	}
+ 	printf("SWEET TS: F01 q=%#x d=%#x | F12 q=%#x c=%#x d=%#x\n",
+ 	    f01_query, f01_data, f12_query, f12_ctrl, f12_data);
+-	unsigned errors = 0, ticks = 0;
++	/*
++	 * 0283: the old loop read F01's interrupt status over I2C 100 times a second (about 1 ms of busy polling each: 8 % of a core and a wakeup
++	 * every 10 ms whatever the panel did). The Synaptics ATTN line (TLMM east gpio125, active low) is asserted exactly while the controller
++	 * holds an unread report, and reading it is one MMIO load. Linux's rmi4 driver sleeps on that line's interrupt; there is no TLMM->GIC
++	 * route here, so the thread samples the level instead and touches the bus only when it is low. The line is trusted only after it has
++	 * been seen low with every F12 report of the first 8 (fj_attn_hits) and is dropped again if a report ever shows up with it high.
++	 * A forced read every 40 ms while a finger is down (lift safety) and every 400 ms at rest covers a stuck line.
++	 * Cadence: 4 ms while touched (a report every ~8 ms, so no report waits long), 8 ms at rest, 500 ms with the display off (0258).
++	 */
++	unsigned errors = 0, ticks = 0, since_read = 0, attn_hits = 0;
++	bool attn_gate = false;
+ 	while (!st.dead) {
++		bool attn_low = (touch_rd(st.gpio_e, TOUCH_GPIO_IO(FJ_GPIO_ATTN)) & 1u) == 0;
++		bool pressed = st.active != 0;
++		bool display_off = __atomic_load_n(&sweet_display_off, __ATOMIC_ACQUIRE) != 0;
++		unsigned force = pressed ? 10u : 50u;
++		++ticks;
++		if (attn_gate && !attn_low && ++since_read < force) {
++			touch_wait(pressed ? 4 : (display_off ? 500 : 8));
++			continue;
++		}
++		since_read = 0;
+ 		uint8_t status[3] = {0};
+ 		if (rmi_read(f01_data, status, 1u + fj_irq_bytes) != 0) {
+ 			if (++errors > 200) {
+@@ -1317,22 +1337,34 @@
+ 			(void)rmi_f01_init();        /* unconfigured -> re-init */
+ 		}
+ 		uint16_t irq = (uint16_t)(status[1] | (status[2] << 8));
++		bool f12_irq = (irq & (fj_f12_irq ? fj_f12_irq : 0xffffu)) != 0;
++		if (f12_irq) {
++			if (attn_low) {
++				if (!attn_gate && ++attn_hits >= 8) {
++					attn_gate = true;
++					printf("SWEET TS: ATTN line trusted (8 reports seen with it low), I2C only on demand\n");
++				}
++			} else if (attn_gate || attn_hits) {
++				if (attn_gate) {
++					printf("SWEET TS: report with ATTN high; back to polling the controller\n");
++				}
++				attn_gate = false;
++				attn_hits = 0;
++			}
++		}
+ 		/* F12's own bit, any bit if the PDT gave none, and a 50 ms poll in case ATTN/irq never shows */
+-		if ((irq & (fj_f12_irq ? fj_f12_irq : 0xffffu)) || (ticks % 5u) == 0) {
++		if (f12_irq || (!attn_gate && (ticks % 5u) == 0) || (attn_gate && pressed)) {
+ 			(void)rmi_frame();
+ 		}
+-		if ((++ticks % 300u) == 0) {
+-			printf("SWEET TS: raw max x=%d y=%d irq=%#x dev=%#x frames=%u f12[0..15]="
++		if ((ticks % 3000u) == 0) {
++			printf("SWEET TS: raw max x=%d y=%d irq=%#x dev=%#x frames=%u gate=%d f12[0..15]="
+ 			    "%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+-			    fj_max_x, fj_max_y, irq, status[0], fj_frames,
++			    fj_max_x, fj_max_y, irq, status[0], fj_frames, attn_gate,
+ 			    fj_raw[0], fj_raw[1], fj_raw[2], fj_raw[3], fj_raw[4], fj_raw[5], fj_raw[6], fj_raw[7],
+ 			    fj_raw[8], fj_raw[9], fj_raw[10], fj_raw[11], fj_raw[12], fj_raw[13], fj_raw[14], fj_raw[15]);
+ 		}
+-		/*
+-		 * 0258: with the display off nobody reads the panel (iOS wakes on the power button), so one look every 500 ms
+-		 * instead of 100 I2C reads a second; the first poll after it comes back on is at most 500 ms late.
+-		 */
+-		touch_wait(__atomic_load_n(&sweet_display_off, __ATOMIC_ACQUIRE) ? 500 : 10);
++		/* 0258: with the display off nobody reads the panel (iOS wakes on the power button): one look every 500 ms. */
++		touch_wait(display_off ? 500 : (st.active ? 4 : (attn_gate ? 8 : 10)));
+ 	}
+ 	touch_report(0, st.x, st.y);
+ out:

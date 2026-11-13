@@ -1,0 +1,47 @@
+diff --git a/osfmk/arm/caches.c b/osfmk/arm/caches.c
+--- a/osfmk/arm/caches.c
++++ b/osfmk/arm/caches.c
+@@ -53,6 +53,9 @@
+ #define LWOpDone 1
+ #define BWOpDone 3
+ 
++#if defined(SWEET)
++int sweet_idle_flush = 0;       /* boot-arg sweetidleflush (read in sweet_cpufreq.c setup) */
++#endif
+ #ifndef __ARM_COHERENT_IO__
+ 
+ TUNABLE(bool, up_style_idle_exit, "up_style_idle_exit", false);
+@@ -337,6 +340,18 @@
+ platform_cache_idle_enter(
+ 	void)
+ {
++#if defined(SWEET)
++	/*
++	 * 0284: this build entered every idle (WFI) with FlushPoU_Dcache(): a clean+invalidate of the whole L1 data cache by set/way
++	 * on every idle entry, then ran with a cold cache after each wake-up (hundreds of idle/wake cycles a second). The Kryo 385 cores
++	 * (A55/A75) keep their L1 coherent through the DSU/ACE port during WFI; Linux's arm64 idle does not flush for a plain WFI (only
++	 * a PSCI power-down state, which we do not use, needs it). Skipped; boot-arg sweetidleflush=1 brings the old flush back.
++	 */
++	extern int sweet_idle_flush;
++	if (!sweet_idle_flush) {
++		return;
++	}
++#endif
+ 	platform_cache_disable();
+ 
+ 	/*
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+--- a/bsd/dev/sweet_cpufreq.c
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -942,6 +942,11 @@
+ 		printf("SWEET CPUFREQ: touch boost %s: hold %u ms, A55 ceiling %u kHz\n", on ? "on" : "off (sweetinputboost=0)",
+ 		    cf_in_ms, cf_in_khz);
+ 	}
++	{
++		extern int sweet_idle_flush;    /* osfmk/arm/caches.c (0284) */
++		(void)PE_parse_boot_argn("sweetidleflush", &sweet_idle_flush, sizeof(sweet_idle_flush));
++		printf("SWEET CPUFREQ: idle L1 flush %s (sweetidleflush)\n", sweet_idle_flush ? "ON (old behaviour)" : "off");
++	}
+ 	(void)PE_parse_boot_argn("sweetcpufreq", arg, sizeof(arg));
+ 	(void)PE_parse_boot_argn("sweetamp", &cf_amp, sizeof(cf_amp));
+ 	(void)PE_parse_boot_argn("sweetamp_prio", &cf_amp_pri, sizeof(cf_amp_pri));
