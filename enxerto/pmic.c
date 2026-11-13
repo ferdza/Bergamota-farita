@@ -29,6 +29,7 @@
 
 /* PM8998 PON (SID 0, base 0x800) */
 #define PON_REASON1	0x0808
+#define PON_SOFT_RB_SPARE	0x088f	/* qcom-pon.c reboot-mode: field GENMASK(7,1) on pm8998 (shift 1), as xnu's sweet_reboot.c writes it */
 #define PON_RT		0x0810
 
 /* PMI8998 WLED (SID 3): control 0xd800, sink 0xd900 */
@@ -250,6 +251,8 @@ static int write_allowed(unsigned sid, unsigned addr, unsigned len)
 			return 0;
 		}
 	}
+	if (sid == SID_PM8998)
+		return addr == PON_SOFT_RB_SPARE && len == 1;	/* the reboot reason: only this byte */
 	if (sid != SID_WLED)
 		return 0;
 	switch (addr) {
@@ -347,4 +350,26 @@ int pmic_wled_set(const uint16_t v[2])
 	}
 	(void)wled_put(old);	/* best effort back to what was there */
 	return -1;
+}
+
+/*
+ * Reboot reason for the ABL, the way xnu's sweet_reboot.c and Linux qcom-pon.c (reboot-mode) store it: PM8998 PON_SOFT_RB_SPARE
+ * bits 7:1 = magic (0 normal, 1 recovery, 2 bootloader). The IMEM word alone was not enough: after "reboot to the bootloader" the
+ * phone came back to Enxerto's menu instead of ABL fastboot (user, 2026-11-13). Initialises the SPMI path if needed; 0 = stored
+ * and read back, -1 = not.
+ */
+int pmic_set_boot_reason(unsigned magic)
+{
+	uint8_t old, upd, back;
+
+	if (!sp_ready && pmic_init() < 0)
+		return -1;
+	if (spmi_read(SID_PM8998, PON_SOFT_RB_SPARE, &old))
+		return -1;
+	upd = (uint8_t)((old & 0x01) | ((magic << 1) & 0xfe));
+	if (upd == old)
+		return 0;
+	if (spmi_write_sid(SID_PM8998, PON_SOFT_RB_SPARE, upd, 1))
+		return -1;
+	return !spmi_read(SID_PM8998, PON_SOFT_RB_SPARE, &back) && back == upd ? 0 : -1;
 }

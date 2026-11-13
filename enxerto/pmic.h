@@ -48,6 +48,7 @@ int pmic_pon_reason(void);
 /* WLED backlight: raw 12-bit brightness of both strings. */
 int pmic_wled_get(uint16_t v[2]);
 int pmic_wled_set(const uint16_t v[2]);	/* 0 = written, latched and read back, -1 = not (originals restored) */
+int pmic_set_boot_reason(unsigned magic);	/* PM8998 PON_SOFT_RB_SPARE bits 7:1: 0 normal, 1 recovery, 2 bootloader; 0 = stored */
 int pmic_wled_enabled(void);		/* MOD_EN bit 7 */
 
 /* SMB2 charger (SID 2): read any readable register (CHGR 0x10, USBIN 0x13, MISC 0x16, FG 0x40/0x41). */

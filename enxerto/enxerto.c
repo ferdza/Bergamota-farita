@@ -16,6 +16,7 @@
 #include "charge_mode.h"
 #include "charger.h"
 #include "usb_power.h"
+#include "pmic.h"
 #include "ufs.h"
 #include "fdt.h"
 
@@ -108,6 +109,7 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 	con_skip();
 	con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
 	delay_ms(after_s * 1000);
+	(void)pmic_set_boot_reason(2);	/* ABL fastboot: the PON reason too, not only IMEM */
 	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);

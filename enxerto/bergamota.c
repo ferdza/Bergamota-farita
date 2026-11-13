@@ -211,6 +211,8 @@ static uint64_t smc(uint64_t fn)
 static void __attribute__((noreturn)) hw_reset(uint32_t reason)
 {
 	usb_dwc3_stop();
+	/* the ABL reads the PON reason as well as IMEM: store both (the IMEM word alone brought the phone back to the Enxerto menu) */
+	(void)pmic_set_boot_reason(reason == RESTART_BOOTLOADER ? 2 : 0);
 	*(volatile uint32_t *)IMEM_RESTART_REASON = reason;
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET);
