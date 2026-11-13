@@ -1,0 +1,21 @@
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -119,6 +119,17 @@
+ static void
+ register_serial_functions(struct pe_serial_functions *fns)
+ {
++	/*
++	 * 0282: serial_init() runs more than once before uart_initted is set (arm_init.c, then PE_init_kprintf) when the ADT names no
++	 * "serial-device", and the sweet-fbcon probe re-registers the same node each time. fns->next = gPESF then pointed the node at
++	 * itself: every walk of the list (uart_getc, from the serial keyboard thread at MAXPRI_KERNEL) looped forever, pinning one core
++	 * at 100 % for the whole uptime. Never link a node twice.
++	 */
++	for (struct pe_serial_functions *it = gPESF; it != NULL; it = it->next) {
++		if (it == fns) {
++			return;
++		}
++	}
+ 	fns->next = gPESF;
+ 	gPESF = fns;
+ }
