@@ -36,3 +36,9 @@ Not done: root cause of the ~460-580 s freeze is NOT identified; everything belo
 2. #4 (guard debug/report), #3 (HUPCF): small, low-risk patches.
 3. #5/#6 (verify GX actually off, CX busy poll before CM3 reset), then #7, #8.
 4. Add a log line per slumber with GX GDSCR, RSC_STATUS0, AO_GPU_CX_BUSY_STATUS so the next freeze log can discriminate.
+
+## Status (2026-11-13)
+
+- Done in 0279-0281: SMMU TLB flush / fault check / debug dump skipped while slumbered, VBIF halt before GX off, HUPCF (#3, #4 partly, #5 partly).
+- Done in 0285 (not compiled, not run on the phone): #1 + #2. RSC/PDC microcode programmed once; wake request only when the RSC was put to sleep; `gpu_rpmh_stop` after every GMU reset (suspend and recover), log `SWEET GPU: RSC stop: asleep (RSC_STATUS0 ...)` for the first 3 and on any miss. Boot-arg `sweetgpursc=0` restores the old per-wake behaviour (A/B test for the next freeze).
+- Still open: #5 (verify GX really off before the GMU reset), #6 (CX busy poll, RBBM idle check), #7, #8, #10 (warm boot), #11, #12.

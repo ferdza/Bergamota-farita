@@ -1,0 +1,100 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -1237,16 +1237,53 @@
+ 	return true;
+ }
+ 
+-/* a6xx_rpmh_start: wake the GPU RSC; failure is logged but not fatal (the A618 flow never did this). */
++/*
++ * 0285: RSC/PDC handled as Linux does (docs/compare/GPU_POWER.md #1, #2; the same pairing is in the HackiOS a660 and LakoMoor a650 ports):
++ * the RSC/PDC microcode is programmed once, when the RSC is idle (a6xx_gmu_rpmh_init runs at probe); a wake request is sent only when the
++ * RSC was put to sleep (a6xx_rpmh_start tests GMU_STATUS_PDC_SLEEP); and every slumber ends with a sleep request that releases the GPU's
++ * RPMh votes (a6xx_rpmh_stop: CONTROL_REQ 1, poll RSC_STATUS0 bit 16, CONTROL_REQ 0). Before this, every wake rewrote the sequencer memory and
++ * the PDC while the RSC was live and asked it to wake although it never slept, and the slumber-time votes were never dropped, which is the
++ * biggest structural difference from every working reference. Boot-arg sweetgpursc=0 brings the old per-wake behaviour back.
++ */
++static uint32_t a630_rsc_pair = 1;
++static bool rsc_programmed, rsc_asleep;
++
++/* a6xx_rpmh_start: wake the GPU RSC when it was put to sleep; failure is logged but not fatal. */
+ static void
+ gpu_rpmh_start(void)
+ {
++	if (a630_rsc_pair && !rsc_asleep) {
++		return;                                         /* Linux: no wake unless PDC_SLEEP is set */
++	}
+ 	gpu_wr(gmu, GMU_RSCC_CONTROL_REQ, 1u << 1);
+ 	bool ack = gpu_poll(gmu, GMU_RSCC_CONTROL_ACK, 1u << 1, 1u << 1, 10000);
+ 	bool idle = gpu_poll(gmu, RSCC(RSCC_SEQ_BUSY_DRV0), 0xffffffffu, 0, 10000);
+ 	gpu_wr(gmu, GMU_RSCC_CONTROL_REQ, 0);
+-	printf("SWEET GPU: RSC wake: ack=%u sequencer idle=%u (CONTROL_ACK 0x%08x SEQ_BUSY 0x%08x)\n",
+-	    ack, idle, gpu_rd(gmu, GMU_RSCC_CONTROL_ACK), gpu_rd(gmu, RSCC(RSCC_SEQ_BUSY_DRV0)));
++	rsc_asleep = false;
++	if (!a630_quiet || !ack || !idle) {
++		printf("SWEET GPU: RSC wake: ack=%u sequencer idle=%u (CONTROL_ACK 0x%08x SEQ_BUSY 0x%08x)\n",
++		    ack, idle, gpu_rd(gmu, GMU_RSCC_CONTROL_ACK), gpu_rd(gmu, RSCC(RSCC_SEQ_BUSY_DRV0)));
++	}
++}
++
++/* a6xx_rpmh_stop: after the GMU core is in reset, tell the RSC to power the GPU off and wait until it has. */
++static void
++gpu_rpmh_stop(void)
++{
++	static unsigned logged;
++
++	if (!a630_rsc_pair || !rsc_programmed || rsc_asleep) {
++		return;
++	}
++	gpu_wr(gmu, GMU_RSCC_CONTROL_REQ, 1);
++	bool off = gpu_poll(gmu, RSCC(RSCC_RSC_STATUS0_DRV0), 1u << 16, 1u << 16, 10000);
++	uint32_t st0 = gpu_rd(gmu, RSCC(RSCC_RSC_STATUS0_DRV0));
++	gpu_wr(gmu, GMU_RSCC_CONTROL_REQ, 0);
++	rsc_asleep = true;                                      /* Linux sets PDC_SLEEP even when the poll timed out */
++	if (!off || logged < 3) {
++		logged++;
++		printf("SWEET GPU: RSC stop: %s (RSC_STATUS0 0x%08x)\n", off ? "asleep" : "did NOT report asleep within 10 ms", st0);
++	}
+ }
+ 
+ /* ------------------------------------------------------------------ */
+@@ -1373,8 +1410,11 @@
+ 	}
+ 	gpu_smmu_faults();
+ 	gpu_wr(gmu, GMU_GENERAL_7, 1);                          /* TCM retention */
+-	if (!gpu_gmu_rpmh_ucode()) {
+-		return false;
++	if (!a630_rsc_pair || !rsc_programmed) {
++		if (!gpu_gmu_rpmh_ucode()) {
++			return false;
++		}
++		rsc_programmed = true;
+ 	}
+ 	gpu_rpmh_start();
+ 	/* a6xx_gmu_fw_load legacy: the raw image from ITCM_START on, running on into the DTCM. */
+@@ -3465,6 +3505,7 @@
+ 	gpu_gx_slumber();
+ 	uint32_t st = gpu_rd(gmu, GMU_RPMH_POWER_STATE);
+ 	gpu_gmu_reset();
++	gpu_rpmh_stop();                                        /* 0285: a6xx_rpmh_stop, after the CM3 reset like Linux */
+ 	a630_awake = false;
+ 	a630_asleep = true;
+ 	a630_suspends++;
+@@ -3553,6 +3594,7 @@
+ 		gmu_oob_clear(OOB_GPU);
+ 		gpu_gx_slumber();
+ 		gpu_gmu_reset();
++		gpu_rpmh_stop();                                /* 0285 */
+ 		a630_awake = false;
+ 	}
+ 	{
+@@ -4148,6 +4190,9 @@
+ 		if (PE_parse_boot_argn("sweetgpuidle", &v, sizeof(v)) && v > 0) {
+ 			a630_idle_ms = (uint32_t)MIN(v, 600000);
+ 		}
++		if (PE_parse_boot_argn("sweetgpursc", &v, sizeof(v))) {
++			a630_rsc_pair = v != 0;
++		}
+ 		if (PE_parse_boot_argn("sweetgpuhwcg", &v, sizeof(v))) {
+ 			a630_hwcg = v != 0;
+ 		}
